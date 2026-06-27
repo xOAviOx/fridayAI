@@ -75,13 +75,13 @@ What this means concretely:
 Six chunks, each commit-sized and individually testable. Stop after each
 for user testing before moving on.
 
-1. **`friday/audio/`** — `capture.py` (sounddevice mic + PTT via pynput),
-   `playback.py` (drain `Iterator[AudioChunk]` to speakers), `hotkey.py`
-   (PTT `ctrl+space` + panic `ctrl+shift+esc`). Demo:
-   `python -m friday.audio.demo` records, then echoes back through Kokoro
-   saying "you said something." New extras group:
-   `audio = ["sounddevice>=0.4", "pynput>=1.7", "numpy>=1.26"]`.
-   **THIS IS THE NEXT CHUNK.**
+1. **`friday/audio/`** — **DONE.** `capture.py` (sounddevice mic +
+   PTT-driven start/stop), `playback.py` (`AudioChunk` iterator →
+   speakers with `stop()` → `stream.abort()` for barge-in), `hotkey.py`
+   (PTT `ctrl+space` + panic `ctrl+shift+esc` via `pynput.Listener`),
+   `demo.py` (`python -m friday.audio.demo` — end-to-end I/O smoke test
+   that records, then plays a Kokoro-synthesised duration line back).
+   Extras: `audio = ["sounddevice>=0.4", "pynput>=1.7", "numpy>=1.26"]`.
 2. **`friday/stt/groq_whisper.py`** — Groq Whisper impl behind the
    existing `STTProvider` interface.
 3. **`friday/skills/registry.py` + `builtin.py`** — `@skill` decorator
@@ -162,7 +162,7 @@ friday/
   llm/groq_provider.py # TODO   — chunk 5
   tts/base.py          # DONE
   tts/kokoro.py        # DONE   — default local TTS
-  audio/               # TODO   — chunk 1 (NEXT)
+  audio/               # DONE   — chunk 1 (capture + playback + hotkey + demo)
   skills/              # TODO   — chunk 3
   agent/safety.py      # TODO   — chunk 4
   agent/loop.py        # TODO   — chunk 6

@@ -106,6 +106,28 @@ python scratch_tts.py
 Open `out.wav` in any audio player; if you hear the line, the provider,
 config, and PCM conversion are all healthy.
 
+## Try the audio I/O loop
+
+Once you've also installed the audio extras you can drive the full
+hotkey + mic + Kokoro + speakers chain end-to-end, no STT or LLM yet:
+
+```bash
+# Adds sounddevice + pynput + numpy
+uv sync --extra audio --extra tts-kokoro
+
+python -m friday.audio.demo
+```
+
+Hold `ctrl+space` and say anything; release to stop. FRIDAY will
+synthesise "Got it. I captured N seconds of audio." through Kokoro
+and play it back through your default output device. Press
+`ctrl+shift+esc` to quit — pressing it during playback cuts the
+audio immediately, which is the panic-key behaviour Phase 1 needs.
+
+Linux/macOS users: install PortAudio first (`brew install portaudio`
+or `apt install libportaudio2`). The Windows `sounddevice` wheel
+bundles it.
+
 ## Layout
 
 ```
@@ -117,6 +139,10 @@ friday/
   llm/base.py        # LLMProvider interface (Phase 1: groq_provider.py)
   tts/base.py        # TTSProvider interface
   tts/kokoro.py      # local CPU TTS (default — no API key, no cost)
+  audio/capture.py   # mic recorder driven by PTT start/stop
+  audio/playback.py  # AudioChunk iterator → speakers (with stop()/barge-in)
+  audio/hotkey.py    # global PTT + panic hotkeys via pynput
+  audio/demo.py      # `python -m friday.audio.demo` — end-to-end I/O smoke test
   audio/             # mic capture + playback (Phase 1)
   skills/            # @skill registry + builtins (Phase 1)
   agent/             # loop, router, executor, safety (Phase 1+)
