@@ -21,6 +21,15 @@ tts-kokoro = [
     "kokoro>=0.9.4",
 ]
 
+# Audio I/O: mic capture + speaker playback + global hotkey.
+# Pulls PortAudio via the sounddevice wheel on Windows; on macOS/Linux
+# the system PortAudio package is required separately.
+audio = [
+    "sounddevice>=0.4",
+    "pynput>=1.7",
+    "numpy>=1.26",
+]
+
 [project.scripts]
 friday = "friday.main:main"
 
