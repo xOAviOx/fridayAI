@@ -27,17 +27,28 @@ The whole thing is one Python daemon for now. A HUD comes much later (Phase 6).
 ## Setup
 
 ```bash
-# 1. Get a venv with deps
+# 1. Get a venv with the base deps (config + logging only)
 uv sync                       # preferred
 # or:
 python -m venv .venv && .venv\Scripts\activate && pip install -e .
 
-# 2. Configure secrets
+# 2. (Optional) Add the local TTS extras for the default $0 voice path
+uv sync --extra tts-kokoro    # preferred
+# or:
+pip install -e ".[tts-kokoro]"
+# First synthesis will download ~330 MB of Kokoro weights into the
+# HuggingFace cache. Subsequent runs are offline.
+
+# 3. Configure secrets
 cp .env.example .env
-# Fill in only the keys for the providers you've selected in config.yaml.
-# Phase 0 doesn't actually call any API — it just validates config — but
-# missing keys for the *selected* providers will fail loudly here.
+# Out of the box you only need GROQ_API_KEY — the default stack is
+# Groq (STT + LLM) + Kokoro (local TTS), and Kokoro needs no key.
+# Missing keys for the *selected* providers fail loudly at boot.
 ```
+
+The default config is `providers.tts: kokoro` (local, free). To switch to
+cloud streaming TTS, set `providers.tts: elevenlabs` in `config.yaml` and
+put `ELEVENLABS_API_KEY` in `.env`.
 
 ## Run
 
@@ -60,6 +71,41 @@ You should see something like:
 
 Process exits with code 0. Config errors exit with code 2 and a clear message.
 
+## Smoke-test the TTS
+
+Phase 0 doesn't wire TTS into the runtime loop yet, but you can drive the
+provider directly to confirm Kokoro is working end-to-end. After
+`uv sync --extra tts-kokoro`, drop this in `scratch_tts.py` and run it:
+
+```python
+import wave
+from friday.config import load_config
+from friday.tts import KokoroTTS
+
+cfg = load_config().tts.kokoro
+tts = KokoroTTS(voice=cfg.voice, lang_code=cfg.lang_code, speed=cfg.speed)
+
+chunks = list(tts.synthesize("FRIDAY here. Local voice, zero dollars."))
+print(f"got {len(chunks)} chunk(s), sr={chunks[0].sample_rate}")
+
+with wave.open("out.wav", "wb") as w:
+    w.setnchannels(1)
+    w.setsampwidth(2)               # 16-bit PCM
+    w.setframerate(chunks[0].sample_rate)
+    for c in chunks:
+        w.writeframes(c.pcm)
+print("wrote out.wav")
+```
+
+```bash
+python scratch_tts.py
+# → got N chunk(s), sr=24000
+# → wrote out.wav
+```
+
+Open `out.wav` in any audio player; if you hear the line, the provider,
+config, and PCM conversion are all healthy.
+
 ## Layout
 
 ```
@@ -69,7 +115,8 @@ friday/
   utils/logging.py   # structured logging setup + audit logger
   stt/base.py        # STTProvider interface (Phase 1: groq_whisper.py)
   llm/base.py        # LLMProvider interface (Phase 1: groq_provider.py)
-  tts/base.py        # TTSProvider interface (Phase 1: elevenlabs.py)
+  tts/base.py        # TTSProvider interface
+  tts/kokoro.py      # local CPU TTS (default — no API key, no cost)
   audio/             # mic capture + playback (Phase 1)
   skills/            # @skill registry + builtins (Phase 1)
   agent/             # loop, router, executor, safety (Phase 1+)
