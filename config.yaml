@@ -1,0 +1,87 @@
+# =========================================================================
+# FRIDAY config
+# Edit this file to switch providers, change hotkeys, or relax safety.
+# Secrets go in .env, never here.
+# =========================================================================
+
+# Which provider implementation to use for each role.
+# Switching brain/STT/TTS is a one-line change here — never code.
+providers:
+  stt: groq           # groq | local_whisper (Phase 2+)
+  llm: groq           # groq | gemini | anthropic
+  tts: elevenlabs     # elevenlabs | kokoro (Phase 2+)
+
+# Per-provider settings. Only the section matching `providers.*` is used,
+# but the others are validated too so a typo fails loudly.
+llm:
+  groq:
+    model: llama-3.3-70b-versatile        # default brain; cheap + fast
+    base_url: https://api.groq.com/openai/v1
+  gemini:
+    model: gemini-2.5-flash
+  anthropic:
+    model: claude-opus-4-8
+    # Off by default — Anthropic API billing is separate from Pro.
+    enabled: false
+
+stt:
+  groq:
+    model: whisper-large-v3-turbo
+
+tts:
+  elevenlabs:
+    # Fill in your preferred ElevenLabs voice id before Phase 1.
+    voice_id: ""
+    model: eleven_turbo_v2_5
+
+audio:
+  sample_rate: 16000
+  channels: 1
+
+hotkeys:
+  push_to_talk: ctrl+space
+  panic: ctrl+shift+esc
+
+# -------------------------------------------------------------------------
+# Safety — this layer controls *your* machine. Defaults are paranoid.
+# -------------------------------------------------------------------------
+safety:
+  # No actions actually execute — every intended action is logged instead.
+  # Keep this true for all Phase 0/1 testing.
+  dry_run: true
+
+  # Code-exec and computer-use are off by default. Flip on per phase.
+  enable_code_exec: false
+  enable_computer_use: false
+
+  # Anything outside these lists requires explicit confirmation.
+  shell_allowlist:
+    - echo
+    - dir
+    - ls
+    - whoami
+
+  app_allowlist:
+    - spotify
+    - chrome
+    - firefox
+    - notepad
+    - code
+
+# Rate-limit budgets per provider. We warn at warn_at_pct of the limit
+# and back off on 429s with the server's retry-after header.
+rate_limits:
+  groq:
+    requests_per_min: 30
+    tokens_per_min: 6000        # the real bottleneck on free tier
+    requests_per_day: 14400
+    warn_at_pct: 80
+  gemini:
+    requests_per_day: 1500
+    tokens_per_min: 1000000
+    warn_at_pct: 80
+
+logging:
+  level: INFO
+  # Every executed action is appended here with a timestamp.
+  audit_path: friday_audit.log
