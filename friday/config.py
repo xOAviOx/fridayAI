@@ -82,8 +82,26 @@ class ElevenLabsConfig(_StrictModel):
     model: str = "eleven_turbo_v2_5"
 
 
+class KokoroConfig(_StrictModel):
+    # Voice ids come from the Kokoro model card. ``af_heart`` is the
+    # upstream default and a safe American English pick.
+    voice: str = "af_heart"
+    # Single-character Kokoro language code — 'a' = American English,
+    # 'b' = British, etc. Must match the voice family.
+    lang_code: str = "a"
+    speed: float = 1.0
+
+    @field_validator("speed")
+    @classmethod
+    def _positive_speed(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("tts.kokoro.speed must be > 0")
+        return v
+
+
 class TTSSection(_StrictModel):
     elevenlabs: ElevenLabsConfig = Field(default_factory=ElevenLabsConfig)
+    kokoro: KokoroConfig = Field(default_factory=KokoroConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -94,7 +112,9 @@ class TTSSection(_StrictModel):
 class ProviderSelection(_StrictModel):
     stt: STTName = "groq"
     llm: LLMName = "groq"
-    tts: TTSName = "elevenlabs"
+    # Default to the local, free path so a fresh checkout boots at $0.
+    # ElevenLabs is still available as an opt-in cloud alternative.
+    tts: TTSName = "kokoro"
 
 
 class AudioConfig(_StrictModel):

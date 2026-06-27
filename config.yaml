@@ -9,7 +9,7 @@
 providers:
   stt: groq           # groq | local_whisper (Phase 2+)
   llm: groq           # groq | gemini | anthropic
-  tts: elevenlabs     # elevenlabs | kokoro (Phase 2+)
+  tts: kokoro         # kokoro (local, free, default) | elevenlabs (cloud)
 
 # Per-provider settings. Only the section matching `providers.*` is used,
 # but the others are validated too so a typo fails loudly.
@@ -29,9 +29,18 @@ stt:
     model: whisper-large-v3-turbo
 
 tts:
+  # Local CPU-only TTS. No API key, no network, ~1s/sentence on a laptop.
+  # First run downloads ~330 MB of weights into the HuggingFace cache.
+  # Voice ids come from the Kokoro model card — `af_heart` is the upstream
+  # default. `am_*` are male, `af_*` female, `b*` British, `a*` American.
+  kokoro:
+    voice: af_heart
+    lang_code: a            # 'a' = American English; 'b' = British English
+    speed: 1.0              # 1.0 = natural; 1.1–1.2 = snappier assistant
+
+  # Opt-in cloud TTS. Requires ELEVENLABS_API_KEY in .env when selected.
   elevenlabs:
-    # Fill in your preferred ElevenLabs voice id before Phase 1.
-    voice_id: ""
+    voice_id: ""            # set to your preferred ElevenLabs voice id
     model: eleven_turbo_v2_5
 
 audio:

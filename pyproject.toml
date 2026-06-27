@@ -13,6 +13,14 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+# Local CPU-only TTS. Pulls torch + transformers transitively (~2 GB on
+# disk after first model download). Keep it as an extra so Phase 0
+# config-only validation doesn't pay that cost.
+tts-kokoro = [
+    "kokoro>=0.9.4",
+]
+
 [project.scripts]
 friday = "friday.main:main"
 
