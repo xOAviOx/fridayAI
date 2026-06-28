@@ -8,7 +8,13 @@ aren't installed.
 """
 
 from friday.audio.capture import MicRecorder
+from friday.audio.encoding import float32_to_pcm16_bytes
 from friday.audio.hotkey import HotkeyController
 from friday.audio.playback import Speaker
 
-__all__ = ["HotkeyController", "MicRecorder", "Speaker"]
+__all__ = [
+    "HotkeyController",
+    "MicRecorder",
+    "Speaker",
+    "float32_to_pcm16_bytes",
+]

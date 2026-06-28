@@ -30,6 +30,13 @@ audio = [
     "numpy>=1.26",
 ]
 
+# Groq Whisper STT via the OpenAI-SDK-compatible client. The `openai`
+# package is the wire driver — Groq just runs on it with a custom
+# base_url. Pulls httpx transitively. ~6 MB total.
+stt-groq = [
+    "openai>=1.40",
+]
+
 [project.scripts]
 friday = "friday.main:main"
 
