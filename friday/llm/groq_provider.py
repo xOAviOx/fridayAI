@@ -322,30 +322,34 @@ def _to_openai_message(m: ChatMessage) -> dict[str, Any]:
 
 
 def _from_openai_response(response: Any) -> ChatResponse:
-    """Translate the OpenAI ``ChatCompletion`` object back to ``ChatResponse``."""
+    """Translate the OpenAI ``ChatCompletion`` object back to ``ChatResponse``.
+
+    Some OpenAI-compatible proxies (e.g. agentrouter) respond with
+    ``Content-Type: text/html`` even for valid JSON bodies.  The OpenAI SDK
+    then returns the raw body as a plain ``str`` instead of a structured
+    object.  We detect that and parse the JSON ourselves.
+    """
+    if isinstance(response, str):
+        try:
+            data = json.loads(response)
+        except json.JSONDecodeError:
+            log.warning("non-JSON string response from LLM: %r", response[:200])
+            return ChatResponse(content=response, finish_reason="stop")
+        return _from_openai_dict(data)
+
     choice = response.choices[0]
     message = choice.message
 
     tool_calls: list[ToolCall] = []
     raw_calls = getattr(message, "tool_calls", None) or []
     for raw in raw_calls:
-        # The SDK exposes a structured object, but the function arguments
-        # are still a JSON-encoded string per the OpenAI wire format.
-        # Decode here so the agent never sees a string-shaped dict.
         fn = raw.function
         try:
             arguments = json.loads(fn.arguments) if fn.arguments else {}
         except json.JSONDecodeError as exc:
-            log.warning(
-                "tool call %s arguments aren't valid JSON: %s", raw.id, exc
-            )
+            log.warning("tool call %s arguments aren't valid JSON: %s", raw.id, exc)
             arguments = {"_raw": fn.arguments}
         if not isinstance(arguments, dict):
-            log.warning(
-                "tool call %s arguments decoded to %s, expected dict",
-                raw.id,
-                type(arguments).__name__,
-            )
             arguments = {"_raw": arguments}
         tool_calls.append(ToolCall(id=raw.id, name=fn.name, arguments=arguments))
 
@@ -369,6 +373,51 @@ def _from_openai_response(response: Any) -> ChatResponse:
         finish_reason=choice.finish_reason or "stop",
         usage=usage,
         raw={"id": getattr(response, "id", None), "model": getattr(response, "model", None)},
+    )
+
+
+def _from_openai_dict(data: dict[str, Any]) -> ChatResponse:
+    """Parse a raw OpenAI-format JSON dict (for non-standard content-types)."""
+    choices = data.get("choices") or []
+    if not choices:
+        log.warning("LLM response has no choices: %s", data)
+        return ChatResponse(content=None, finish_reason="stop")
+
+    choice = choices[0]
+    message = choice.get("message") or {}
+    content = message.get("content")
+    finish_reason = choice.get("finish_reason") or "stop"
+
+    tool_calls: list[ToolCall] = []
+    for i, raw in enumerate(message.get("tool_calls") or []):
+        fn = raw.get("function") or {}
+        args_str = fn.get("arguments") or ""
+        try:
+            arguments = json.loads(args_str) if args_str else {}
+        except json.JSONDecodeError:
+            arguments = {"_raw": args_str}
+        if not isinstance(arguments, dict):
+            arguments = {"_raw": arguments}
+        tool_calls.append(ToolCall(
+            id=raw.get("id") or f"tc_{i}",
+            name=fn.get("name") or "",
+            arguments=arguments,
+        ))
+
+    usage = None
+    u = data.get("usage")
+    if u:
+        usage = TokenUsage(
+            prompt_tokens=u.get("prompt_tokens") or 0,
+            completion_tokens=u.get("completion_tokens") or 0,
+            total_tokens=u.get("total_tokens") or 0,
+        )
+
+    return ChatResponse(
+        content=content,
+        tool_calls=tool_calls,
+        finish_reason=finish_reason,
+        usage=usage,
     )
 
 
