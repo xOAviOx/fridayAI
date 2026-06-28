@@ -193,16 +193,30 @@ class AgentLoop:
             lang_code=config.tts.kokoro.lang_code,
             speed=config.tts.kokoro.speed,
         )
-        budget = BudgetTracker(
-            config.rate_limits.get("groq") or _empty_budget(),
-            name="groq",
-        )
-        self._llm = GroqLLM(
-            api_key=_require(config.secrets.groq_api_key, "GROQ_API_KEY"),
-            model=config.llm.groq.model,
-            base_url=config.llm.groq.base_url,
-            budget=budget,
-        )
+        if config.providers.llm == "openai_compat":
+            budget = BudgetTracker(
+                config.rate_limits.get("openai_compat") or _empty_budget(),
+                name="openai_compat",
+            )
+            self._llm = GroqLLM(
+                api_key=_require(
+                    config.secrets.openai_compat_api_key, "OPENAI_COMPAT_API_KEY"
+                ),
+                model=config.llm.openai_compat.model,
+                base_url=config.llm.openai_compat.base_url,
+                budget=budget,
+            )
+        else:
+            budget = BudgetTracker(
+                config.rate_limits.get("groq") or _empty_budget(),
+                name="groq",
+            )
+            self._llm = GroqLLM(
+                api_key=_require(config.secrets.groq_api_key, "GROQ_API_KEY"),
+                model=config.llm.groq.model,
+                base_url=config.llm.groq.base_url,
+                budget=budget,
+            )
 
         # ----- audio I/O ------------------------------------------------
         self._recorder = MicRecorder(
@@ -448,8 +462,15 @@ class AgentLoop:
                 self._history.add(tool_msg)
 
         # Exhausted all hops without a terminal response.
+        # If the last tool result looks like a success, say "Done" instead of
+        # an alarm — the action completed, the model just over-thought it.
         log.warning("max tool hops (%d) reached without a final reply", _MAX_TOOL_HOPS)
-        self._speak_sync("I'm getting stuck — let me try again.")
+        last = self._history.messages[-1] if self._history.messages else None
+        last_content = (last.content or "") if last else ""
+        if last and last.role == "tool" and not last_content.startswith("["):
+            self._speak_sync("Done.")
+        else:
+            self._speak_sync("I'm getting stuck — let me try again.")
 
     # ----- helpers ----------------------------------------------------------
 
@@ -484,9 +505,10 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    if config.providers.llm != "groq":
+    if config.providers.llm not in ("groq", "openai_compat"):
         print(
-            f"[FATAL] loop expects providers.llm = groq, got {config.providers.llm!r}",
+            f"[FATAL] loop expects providers.llm = groq or openai_compat, "
+            f"got {config.providers.llm!r}",
             file=sys.stderr,
         )
         return 2

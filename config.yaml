@@ -25,6 +25,12 @@ llm:
     model: claude-opus-4-8
     # Off by default — Anthropic API billing is separate from Pro.
     enabled: false
+  # Any OpenAI-compatible endpoint — agentrouter.org, LM Studio, vLLM, etc.
+  # Switch to it with:  providers.llm: openai_compat
+  # Set OPENAI_COMPAT_API_KEY in .env
+  openai_compat:
+    base_url: https://agentrouter.org/v1
+    model: claude-opus-4-8
 
 stt:
   groq:

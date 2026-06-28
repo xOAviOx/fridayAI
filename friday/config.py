@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 STTName = Literal["groq", "local_whisper"]
-LLMName = Literal["groq", "gemini", "anthropic"]
+LLMName = Literal["groq", "gemini", "anthropic", "openai_compat"]
 TTSName = Literal["elevenlabs", "kokoro"]
 
 
@@ -63,10 +63,22 @@ class AnthropicLLMConfig(_StrictModel):
     enabled: bool = False
 
 
+class OpenAICompatConfig(_StrictModel):
+    """Any OpenAI-compatible endpoint (agentrouter.org, LM Studio, vLLM, etc.).
+
+    Set OPENAI_COMPAT_API_KEY in .env, then switch providers.llm to
+    openai_compat and fill in base_url + model below.
+    """
+
+    base_url: str = "https://agentrouter.org/v1"
+    model: str = "claude-opus-4-8"
+
+
 class LLMSection(_StrictModel):
     groq: GroqLLMConfig = Field(default_factory=GroqLLMConfig)
     gemini: GeminiLLMConfig = Field(default_factory=GeminiLLMConfig)
     anthropic: AnthropicLLMConfig = Field(default_factory=AnthropicLLMConfig)
+    openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
 
 
 class GroqSTTConfig(_StrictModel):
@@ -180,6 +192,7 @@ class Secrets(BaseModel):
     elevenlabs_api_key: str | None = None
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
+    openai_compat_api_key: str | None = None
 
     def has(self, name: str) -> bool:
         value = getattr(self, name, None)
@@ -213,6 +226,7 @@ _REQUIRED_SECRETS: dict[tuple[str, str], str] = {
     ("llm", "groq"): "groq_api_key",
     ("llm", "gemini"): "gemini_api_key",
     ("llm", "anthropic"): "anthropic_api_key",
+    ("llm", "openai_compat"): "openai_compat_api_key",
     ("stt", "groq"): "groq_api_key",
     ("tts", "elevenlabs"): "elevenlabs_api_key",
     # local_whisper and kokoro need no keys.
@@ -263,6 +277,7 @@ def load_config(
         elevenlabs_api_key=_env("ELEVENLABS_API_KEY"),
         gemini_api_key=_env("GEMINI_API_KEY"),
         anthropic_api_key=_env("ANTHROPIC_API_KEY"),
+        openai_compat_api_key=_env("OPENAI_COMPAT_API_KEY"),
     )
 
     try:
