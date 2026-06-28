@@ -191,11 +191,11 @@ class GroqLLM(LLMProvider):
             "messages": payload_messages,
             "temperature": temperature,
             "stream": True,
-            # Ask Groq to include usage in the final stream chunk.
-            # If the endpoint doesn't support this option it's silently
-            # ignored, so no harm done.
-            "stream_options": {"include_usage": True},
         }
+        # stream_options is Groq / OpenAI specific — only add it for
+        # known-compatible endpoints so other providers don't choke on it.
+        if "groq.com" in self._client.base_url.host:
+            request_kwargs["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
         if tools:

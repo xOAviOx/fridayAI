@@ -444,6 +444,13 @@ class AgentLoop:
                 )
 
             route = self._router.route(response)
+            log.info(
+                "hop %d → finish=%s tools=%s speech=%r",
+                hop + 1,
+                response.finish_reason,
+                [tc.name for tc in response.tool_calls],
+                (response.content or "")[:120],
+            )
 
             if route.is_terminal:
                 pipeline.wait()  # let TTS finish before next user turn
