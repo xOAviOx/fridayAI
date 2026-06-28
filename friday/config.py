@@ -193,6 +193,8 @@ class Secrets(BaseModel):
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     openai_compat_api_key: str | None = None
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
 
     def has(self, name: str) -> bool:
         value = getattr(self, name, None)
@@ -278,6 +280,8 @@ def load_config(
         gemini_api_key=_env("GEMINI_API_KEY"),
         anthropic_api_key=_env("ANTHROPIC_API_KEY"),
         openai_compat_api_key=_env("OPENAI_COMPAT_API_KEY"),
+        spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
+        spotify_client_secret=_env("SPOTIFY_CLIENT_SECRET"),
     )
 
     try:

@@ -25,6 +25,7 @@ from friday.skills.registry import (
 # ``default_registry``. Kept after the registry imports so the registry
 # exists by the time the decorators run.
 from friday.skills import builtin as builtin  # noqa: F401
+from friday.skills import spotify as spotify  # noqa: F401
 
 __all__ = [
     "Skill",

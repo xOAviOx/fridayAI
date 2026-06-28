@@ -53,6 +53,12 @@ llm-groq = [
     "openai>=1.40",
 ]
 
+# Spotify Web API — needed for spotify_play_song and spotify_now_playing
+# (on non-macOS). spotify_search works without this.
+spotify = [
+    "spotipy>=2.23",
+]
+
 [project.scripts]
 friday = "friday.main:main"
 
