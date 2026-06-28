@@ -231,6 +231,51 @@ Defaults in `config.yaml` are paranoid: `dry_run: true`,
 `enable_code_exec: false`, `enable_computer_use: false`. Keep them on
 throughout Phase 1.
 
+## LLM brain (Groq chat with tool calling)
+
+`friday/llm/groq_provider.py` implements the `LLMProvider` interface
+against Groq's OpenAI-SDK-compatible chat-completions endpoint. Tool
+schemas come from `default_registry.tool_schemas()`; the provider
+translates `ChatMessage` ↔ OpenAI shape in both directions, so the
+agent loop never touches a raw OpenAI dict and never JSON-decodes
+tool-call arguments by hand.
+
+Free-tier discipline is built in via `friday/utils/tokens.py`. The
+`BudgetTracker` you pass to `GroqLLM(budget=...)` enforces the limits
+declared in `config.yaml`'s `rate_limits.groq` block:
+
+```yaml
+rate_limits:
+  groq:
+    requests_per_min: 30
+    tokens_per_min: 6000        # the real bottleneck on free tier
+    requests_per_day: 14400
+    warn_at_pct: 80
+```
+
+What the tracker does on each call:
+
+- Pre-flight: blocks (sleeps) when RPM or TPM is exhausted; raises
+  `BudgetExceededError` only on the daily-requests cap (sleeping
+  doesn't help there).
+- Warns at `warn_at_pct` for every meter that's projected over the
+  threshold after this call.
+- On 429: honors the server's `retry-after` header verbatim
+  (capped at 30 s), then retries — bounded to three attempts.
+
+Conversation state lives in `friday/llm/history.py`. The
+`SlidingWindowHistory` keeps a sticky system message plus the last
+N user turns (default 8), preserving tool-call/tool-result pairs as
+units so the window never splits one. The agent loop owns the
+history instance; the provider is stateless.
+
+```bash
+# Install the LLM extras (same openai SDK as stt-groq)
+uv sync --extra llm-groq
+# or:
+pip install -e ".[llm-groq]"
+```
+
 ## Layout
 
 ```
@@ -253,6 +298,9 @@ friday/
   skills/registry.py # @skill decorator + SkillRegistry + JSON-schema generator
   skills/builtin.py  # the five starter skills (open_app, web_search, …)
   agent/safety.py    # SafetyGate: dry-run + allowlists + destructive flag + audit
+  llm/groq_provider.py # Groq chat with tool calling + budget-tracked retries
+  llm/history.py     # SlidingWindowHistory: sticky system + last N user turns
+  utils/tokens.py    # BudgetTracker: RPM/TPM/RPD gating + 429 retry-after
   agent/             # loop, router, executor, safety (Phase 1+)
   codeexec/          # sandboxed code execution (Phase 3)
   computeruse/       # screenshot + pyautogui driver (Phase 4)

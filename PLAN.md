@@ -10,9 +10,10 @@
 - **Phase 0 (scaffold):** done. `python -m friday.main` boots, loads
   config (`.env` + `config.yaml` via pydantic), logs readiness, exits clean.
 - **Phase 1 (MVP loop):** chunks 1 (audio I/O), 2 (Groq Whisper STT),
-  3 (skills registry + 5 starter skills), and 4 (safety gate) are done.
-  The TTS provider (`friday/tts/kokoro.py`) is also done. Remaining:
-  LLM provider, agent loop.
+  3 (skills registry + 5 starter skills), 4 (safety gate), and 5
+  (Groq LLM + budget tracker + sliding window) are done. The TTS
+  provider (`friday/tts/kokoro.py`) is also done. Remaining: agent
+  loop (chunk 6).
 
 ---
 
@@ -117,9 +118,25 @@ for user testing before moving on.
    existing `audit()` helper. Separate `record_execution(...)` event
    for the executor (chunk 6) to log realized outcomes. 18 tests in
    `tests/test_safety.py` cover all four axes plus audit-log content.
-5. **`friday/llm/groq_provider.py`** — Groq chat with tool-calling,
-   sliding-window history. `friday/utils/tokens.py` (usage tracking +
-   429 retry-after backoff) lands with it.
+5. **`friday/llm/groq_provider.py`** — **DONE.** `GroqLLM` implements
+   `LLMProvider` against Groq's OpenAI-SDK-compatible chat-completions
+   endpoint. Two-way translation between `ChatMessage`/`ToolCall` and
+   the OpenAI wire format (tool-call arguments auto-decoded from JSON
+   so the agent loop never sees a string-shaped dict). 3-retry 429
+   handling routed through the budget tracker.
+   `friday/utils/tokens.py` ships the `BudgetTracker`: rolling-60s
+   windows for RPM/TPM, rolling-24h window for RPD, warn-at-pct
+   logging, `BudgetExceededError` on daily-cap exhaustion, and
+   server-honored `retry-after` with a 30 s cap. Clock + sleeper are
+   injectable for deterministic tests. `friday/llm/history.py` ships
+   `SlidingWindowHistory` — sticky system message + last N user turns
+   anchored on user messages so tool-call/tool-result pairs are never
+   split. Extras: `llm-groq = ["openai>=1.40"]`. 39 new tests across
+   `tests/test_{tokens,history,groq_provider_translation}.py`; total
+   suite now 92 passing in <0.2 s. Live smoke test against the real
+   Groq API confirmed plain chat + tool-calling round-trip both work
+   end-to-end (the model correctly picks `open_app` from the chunk 3
+   registry when asked to open Spotify).
 6. **`friday/agent/loop.py` + `router.py` + `executor.py`** —
    orchestration. Done when "open Spotify and play music" runs the full
    loop end-to-end with verbal confirmation.
@@ -178,12 +195,13 @@ friday/
   main.py              # DONE   — Phase 0 boot + log + exit
   config.py            # DONE   — pydantic-validated .env + config.yaml loader
   utils/logging.py     # DONE   — structured logger + audit helper
-  utils/tokens.py      # TODO   — usage tracking + 429 backoff (lands with chunk 5)
+  utils/tokens.py      # DONE   — chunk 5 (RPM/TPM/RPD tracker + 429 backoff)
   stt/base.py          # DONE   — interface only
   stt/groq_whisper.py  # DONE   — chunk 2 (Groq Whisper via openai SDK)
   stt/demo.py          # DONE   — mic → Groq Whisper → Kokoro echo demo
   llm/base.py          # DONE   — interface only
-  llm/groq_provider.py # TODO   — chunk 5
+  llm/groq_provider.py # DONE   — chunk 5 (Groq chat + tool calling + budget)
+  llm/history.py       # DONE   — chunk 5 (sliding-window conversation history)
   tts/base.py          # DONE
   tts/kokoro.py        # DONE   — default local TTS
   audio/               # DONE   — chunk 1 (capture + playback + hotkey + demo)
