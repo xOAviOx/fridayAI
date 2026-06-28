@@ -10,7 +10,15 @@ media_control, system_info, type_text).  Phase 2 adds six more:
 * ``list_running_apps`` — list visible running processes.
 * ``close_app`` — terminate an app by name (destructive).
 
-All six are lazy-import-clean: the module can be imported without any
+Phase 2 also adds four file-system skills:
+
+* ``read_file``     — return the text contents of a file.
+* ``write_file``    — create or overwrite a file with text (destructive).
+* ``delete_file``   — permanently delete a single file (destructive).
+* ``create_folder`` — make a directory (and any missing parents).
+* ``delete_folder`` — permanently remove a directory tree (destructive).
+
+All skills are lazy-import-clean: the module can be imported without any
 optional extra installed.  Only the *called* skill body pays the import
 cost.
 
@@ -22,10 +30,12 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import shutil
 import subprocess
 import sys
 import webbrowser
+from pathlib import Path
 from typing import Literal
 from urllib.parse import quote_plus
 
@@ -430,16 +440,161 @@ def close_app(name: str) -> str:
         return f"no process named {target!r} found"
 
 
+# --------------------------------------------------------------------------- #
+# File-system skills                                                          #
+# --------------------------------------------------------------------------- #
+
+# Maximum bytes read_file will return — keeps the LLM context manageable.
+_READ_FILE_MAX_BYTES = 32_768  # 32 KB
+
+
+@skill
+def read_file(path: str) -> str:
+    """Return the text content of a file.
+
+    Reads the file at *path* as UTF-8 text and returns its content.
+    Files larger than 32 KB are truncated with a notice so the LLM
+    context doesn't blow up.
+
+    Parameters
+    ----------
+    path:
+        Absolute or relative path to the file.
+    """
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"no such file: {p}")
+    if p.is_dir():
+        raise IsADirectoryError(f"{p} is a directory — use list_folder instead")
+
+    size = p.stat().st_size
+    raw = p.read_bytes()[:_READ_FILE_MAX_BYTES]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+
+    suffix = f"\n[truncated — showing first {_READ_FILE_MAX_BYTES} of {size} bytes]" if size > _READ_FILE_MAX_BYTES else ""
+    return text + suffix
+
+
+@skill(destructive=True)
+def write_file(path: str, content: str) -> str:
+    """Write *content* to a file, creating it (and any parent directories) if needed.
+
+    If the file already exists it is **overwritten** without warning —
+    that is why this skill is marked destructive.  The caller should use
+    ``read_file`` first if they want to confirm what will be replaced.
+
+    Parameters
+    ----------
+    path:
+        Absolute or relative path to the target file.
+    content:
+        UTF-8 text to write.  May be empty (creates an empty file).
+    """
+    p = Path(path).expanduser()
+    if p.is_dir():
+        raise IsADirectoryError(f"{p} is a directory, not a file")
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+    lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    return f"wrote {len(content)} chars ({lines} lines) to {p}"
+
+
+@skill(destructive=True)
+def delete_file(path: str) -> str:
+    """Permanently delete a single file.
+
+    **This cannot be undone** — the file is not moved to Trash; it is
+    removed from the filesystem directly.
+
+    Parameters
+    ----------
+    path:
+        Absolute or relative path to the file to delete.
+    """
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"no such file: {p}")
+    if p.is_dir():
+        raise IsADirectoryError(f"{p} is a directory — use delete_folder instead")
+
+    p.unlink()
+    return f"deleted file: {p}"
+
+
+@skill
+def create_folder(path: str) -> str:
+    """Create a directory (and any missing parents).
+
+    Safe to call if the directory already exists — it returns success
+    without touching the existing directory.  Not marked destructive
+    because it never removes or overwrites anything.
+
+    Parameters
+    ----------
+    path:
+        Absolute or relative path of the directory to create.
+    """
+    p = Path(path).expanduser()
+    if p.exists() and not p.is_dir():
+        raise FileExistsError(f"{p} already exists and is not a directory")
+
+    p.mkdir(parents=True, exist_ok=True)
+    return f"created folder: {p}"
+
+
+@skill(destructive=True)
+def delete_folder(path: str) -> str:
+    """Permanently delete a directory and everything inside it.
+
+    **This cannot be undone** — the entire directory tree is removed
+    from the filesystem directly, not moved to Trash.  Use with care.
+
+    Parameters
+    ----------
+    path:
+        Absolute or relative path to the directory to remove.
+    """
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"no such directory: {p}")
+    if not p.is_dir():
+        raise NotADirectoryError(f"{p} is a file — use delete_file instead")
+
+    # Safety guard: refuse to delete the home directory or filesystem root.
+    home = Path.home()
+    try:
+        p.resolve().relative_to(home.resolve())
+        inside_home = True
+    except ValueError:
+        inside_home = False
+
+    if p.resolve() in (home.resolve(), Path("/"), Path("C:\\")):
+        raise ValueError(f"refusing to delete protected path: {p}")
+
+    shutil.rmtree(p)
+    return f"deleted folder and all contents: {p}"
+
+
 __all__ = [
     "close_app",
+    "create_folder",
+    "delete_file",
+    "delete_folder",
     "get_clipboard",
     "list_running_apps",
     "media_control",
     "open_app",
+    "read_file",
     "set_clipboard",
     "set_volume",
     "system_info",
     "take_screenshot",
     "type_text",
     "web_search",
+    "write_file",
 ]
