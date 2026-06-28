@@ -205,7 +205,8 @@ class AgentLoop:
                 model=config.llm.openai_compat.model,
                 base_url=config.llm.openai_compat.base_url,
                 budget=budget,
-                prompt_tools=True,  # agentrouter drops native tools param
+                prompt_tools=True,   # agentrouter drops native tools param
+                no_stream=True,      # agentrouter returns text/html not SSE
             )
         else:
             budget = BudgetTracker(

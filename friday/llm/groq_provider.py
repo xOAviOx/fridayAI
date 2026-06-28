@@ -87,6 +87,7 @@ class GroqLLM(LLMProvider):
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         budget: BudgetTracker | None = None,
         prompt_tools: bool = False,
+        no_stream: bool = False,
     ) -> None:
         if not api_key or not api_key.strip():
             raise ValueError("GroqLLM requires a non-empty api_key")
@@ -111,6 +112,7 @@ class GroqLLM(LLMProvider):
         self._model = model
         self._budget = budget
         self._prompt_tools = prompt_tools
+        self._no_stream = no_stream
         log.debug(
             "GroqLLM ready: model=%s base_url=%s budget=%s",
             model,
@@ -133,6 +135,9 @@ class GroqLLM(LLMProvider):
         max_tokens: int | None = None,
     ) -> ChatResponse:
         """Send a chat-completion request and return the parsed response."""
+        if self._prompt_tools and tools:
+            messages = _inject_prompt_tools(messages, tools)
+            tools = None
         payload_messages = [_to_openai_message(m) for m in messages]
         request_kwargs: dict[str, Any] = {
             "model": self._model,
@@ -201,6 +206,25 @@ class GroqLLM(LLMProvider):
         Budget accounting fires the ``before_request`` estimate before
         the HTTP call and records actual usage after the stream closes.
         """
+        # no_stream mode: provider doesn't support SSE streaming (e.g.
+        # agentrouter returns text/html with Content-Length). Use the
+        # regular chat() call and wrap in a fake streamed-response.
+        if self._no_stream:
+            response = self.chat(
+                messages, tools=tools, temperature=temperature, max_tokens=max_tokens
+            )
+            # Parse prompt tool calls if needed (chat() already injected them).
+            if self._prompt_tools and response.content:
+                clean, tcs = _parse_prompt_tool_calls(response.content)
+                if tcs:
+                    response = ChatResponse(
+                        content=clean or None,
+                        tool_calls=tcs,
+                        finish_reason="tool_calls",
+                        usage=response.usage,
+                    )
+            return _SyncStreamedResponse(response)
+
         # prompt_tools mode: inject tool schemas as text in the last user
         # message instead of using the native tools API parameter.
         # Used for openai_compat endpoints that silently drop the tools param.
@@ -455,6 +479,35 @@ def _retry_after_seconds(exc: Exception) -> float | None:
 # --------------------------------------------------------------------------- #
 
 
+class _SyncStreamedResponse:
+    """Wraps a non-streaming ChatResponse as a StreamedResponse-compatible object.
+
+    Used when the provider doesn't support SSE (e.g. agentrouter returns
+    text/html instead of text/event-stream). The agent loop calls it the
+    same way as StreamedResponse — iterate for text deltas, read .response
+    for the assembled ChatResponse.
+    """
+
+    def __init__(self, response: ChatResponse) -> None:
+        self._raw = response
+        self._exhausted = False
+
+    def __iter__(self) -> Iterator[str]:
+        if self._exhausted:
+            return
+        self._exhausted = True
+        text = self._raw.content or ""
+        if text:
+            yield text
+
+    @property
+    def response(self) -> ChatResponse:
+        if not self._exhausted:
+            for _ in self:
+                pass
+        return self._raw
+
+
 class StreamedResponse:
     """Iterable wrapper around a streaming OpenAI chat-completion.
 
@@ -497,6 +550,7 @@ class StreamedResponse:
         usage: TokenUsage | None = None
 
         for chunk in self._stream:
+            log.debug("stream chunk: %s", chunk)
             # The final usage-only chunk (stream_options.include_usage)
             # arrives with an empty choices list.
             if not chunk.choices:
