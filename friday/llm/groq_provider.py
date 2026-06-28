@@ -48,12 +48,14 @@ _MAX_RETRIES = 3
 _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
 _PROMPT_TOOLS_INSTRUCTION = """
-You have access to tools. Call a tool by outputting EXACTLY this format (nothing else on that line):
-<tool_call>{{"name": "TOOL_NAME", "arguments": {{"arg1": "value1", "arg2": "value2"}}}}</tool_call>
+TOOL USE INSTRUCTIONS (follow exactly):
+- To call a tool output ONLY this block — no text before or after it:
+<tool_call>{{"name": "TOOL_NAME", "arguments": {{"arg1": "value1"}}}}</tool_call>
+- One tool per reply. After the tool result arrives you will be called again.
+- When all actions are done, reply with ONE short spoken sentence (under 15 words).
+- NEVER list, describe, or echo the tools back. NEVER output JSON outside a <tool_call> block.
 
-You may call one tool per response. After each tool result you'll be called again. Once all actions are done, reply with a short spoken confirmation.
-
-Available tools (JSON schemas):
+Available tools:
 {schemas}
 """.strip()
 
@@ -430,7 +432,12 @@ def _inject_prompt_tools(
     messages: list[ChatMessage],
     tools: list[dict[str, Any]],
 ) -> list[ChatMessage]:
-    """Append a compact tool-schema block to the last user message."""
+    """Append a compact tool-schema block to the system message.
+
+    Injecting into the system message (not the user message) prevents the
+    model from echoing the schema JSON as part of its spoken reply — the
+    model treats system content as instructions, not as something to narrate.
+    """
     # Compact schema: keep name, description, and parameters only.
     compact = [
         {
@@ -443,19 +450,19 @@ def _inject_prompt_tools(
     schemas_json = json.dumps(compact, indent=2)
     instruction = _PROMPT_TOOLS_INSTRUCTION.format(schemas=schemas_json)
 
-    # Find the last user message and append the tool block to it.
     result = list(messages)
-    for i in range(len(result) - 1, -1, -1):
-        if result[i].role == "user":
-            original = result[i].content or ""
+
+    # Append to existing system message if one exists.
+    for i, m in enumerate(result):
+        if m.role == "system":
             result[i] = ChatMessage(
-                role="user",
-                content=f"{original}\n\n{instruction}",
+                role="system",
+                content=f"{m.content or ''}\n\n{instruction}",
             )
             return result
 
-    # No user message found — prepend as a standalone user message.
-    result.insert(0, ChatMessage(role="user", content=instruction))
+    # No system message — prepend a dedicated one.
+    result.insert(0, ChatMessage(role="system", content=instruction))
     return result
 
 
