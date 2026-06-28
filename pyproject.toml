@@ -37,6 +37,15 @@ stt-groq = [
     "openai>=1.40",
 ]
 
+# Builtin skills' side-effect deps. Lazy-imported inside skill bodies,
+# so the registry stays import-clean even without these installed —
+# only actually running media_control / system_info(battery|cpu) /
+# type_text needs them.
+skills = [
+    "pyautogui>=0.9",
+    "psutil>=5.9",
+]
+
 [project.scripts]
 friday = "friday.main:main"
 
