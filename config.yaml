@@ -69,8 +69,9 @@ safety:
   # Keep this true for all Phase 0/1 testing.
   dry_run: false
 
-  # Code-exec and computer-use are off by default. Flip on per phase.
-  enable_code_exec: false
+  # Phase 5: code execution is now enabled.
+  # run_python runs code in a subprocess; run_shell uses shell_allowlist below.
+  enable_code_exec: true
   enable_computer_use: false
 
   # Allow destructive skills (write_file, delete_file, etc.) to run
@@ -79,10 +80,42 @@ safety:
 
   # Anything outside these lists requires explicit confirmation.
   shell_allowlist:
+    # basics
     - echo
-    - dir
     - ls
+    - dir
+    - pwd
     - whoami
+    - cat
+    - grep
+    - find
+    - which
+    # files / dirs
+    - mkdir
+    - cp
+    - mv
+    - touch
+    # processes
+    - ps
+    - kill
+    - top
+    # dev tools
+    - git
+    - python
+    - python3
+    - pip
+    - pip3
+    - uv
+    - npm
+    - node
+    - npx
+    - curl
+    - wget
+    # mac-specific
+    - open
+    - pbcopy
+    - pbpaste
+    - say
 
   app_allowlist:
     - spotify

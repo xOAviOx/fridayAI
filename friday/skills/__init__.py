@@ -31,6 +31,7 @@ from friday.skills import spotify as spotify    # noqa: F401
 from friday.skills import timers as timers      # noqa: F401  Phase 3.5
 from friday.skills import weather as weather    # noqa: F401  Phase 3.2
 from friday.skills import web as web            # noqa: F401  Phase 3.3
+from friday.codeexec import sandbox as sandbox  # noqa: F401  Phase 5
 
 __all__ = [
     "Skill",

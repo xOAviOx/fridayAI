@@ -43,10 +43,10 @@ from friday.utils.logging import audit
 log = logging.getLogger(__name__)
 
 # Skill names whose first argument is matched against ``app_allowlist``.
-# Hard-coded for Phase 1 — Phase 3 will move this to a registry-level
-# annotation so new "open something" skills declare their allowlist
-# binding explicitly.
 _APP_GATED_SKILLS: frozenset[str] = frozenset({"open_app"})
+
+# Skills that require safety.enable_code_exec = true to run.
+_CODE_EXEC_SKILLS: frozenset[str] = frozenset({"run_python", "run_shell"})
 
 DecisionKind = Literal["allow", "dry_run", "needs_confirmation", "deny"]
 
@@ -153,6 +153,31 @@ class SafetyGate:
                 f"unknown skill: {skill_name!r}",
                 skill=skill_name,
             )
+
+        # Code-exec gate — run_python and run_shell are off by default.
+        # Must explicitly set safety.enable_code_exec: true in config.yaml.
+        if skill_name in _CODE_EXEC_SKILLS:
+            if not self._config.enable_code_exec:
+                return SafetyDecision.deny(
+                    f"{skill_name!r} requires safety.enable_code_exec: true in config.yaml",
+                    skill=skill_name,
+                )
+            # run_shell: additionally enforce the shell_allowlist.
+            if skill_name == "run_shell":
+                cmd = str(arguments.get("command", "")).strip()
+                head = cmd.split(None, 1)[0] if cmd else ""
+                if not head:
+                    return SafetyDecision.deny(
+                        "run_shell called with empty command",
+                        skill=skill_name,
+                    )
+                if head not in self._shells:
+                    return SafetyDecision.needs_confirmation(
+                        f"shell command {head!r} is not in safety.shell_allowlist",
+                        skill=skill_name,
+                        command=cmd,
+                        allowlist=sorted(self._shells),
+                    )
 
         # App allowlist gate — comes before destructive/dry-run because
         # an off-allowlist app is interesting even in dry-run (we want
