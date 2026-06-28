@@ -57,7 +57,7 @@ hotkeys:
 safety:
   # No actions actually execute — every intended action is logged instead.
   # Keep this true for all Phase 0/1 testing.
-  dry_run: true
+  dry_run: false
 
   # Code-exec and computer-use are off by default. Flip on per phase.
   enable_code_exec: false
