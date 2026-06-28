@@ -105,6 +105,6 @@ rate_limits:
     warn_at_pct: 80
 
 logging:
-  level: INFO
+  level: DEBUG
   # Every executed action is appended here with a timestamp.
   audit_path: friday_audit.log

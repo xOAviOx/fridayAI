@@ -332,11 +332,27 @@ def _from_openai_response(response: Any) -> ChatResponse:
     object.  We detect that and parse the JSON ourselves.
     """
     if isinstance(response, str):
+        stripped = response.strip()
+        log.debug("raw LLM string response (%d chars): %s", len(stripped), stripped[:500])
+        # HTML error page — agentrouter sometimes returns one when the
+        # request is malformed or the upstream is overloaded.
+        if stripped.startswith("<"):
+            # Extract a short human-readable snippet for the log.
+            import re as _re
+            text_only = _re.sub(r"<[^>]+>", " ", stripped)
+            text_only = " ".join(text_only.split())[:300]
+            log.warning("LLM returned HTML instead of JSON: %s", text_only)
+            raise RuntimeError(
+                f"LLM returned an HTML error page (agentrouter upstream error). "
+                f"Content preview: {text_only[:120]}"
+            )
         try:
-            data = json.loads(response)
+            data = json.loads(stripped)
         except json.JSONDecodeError:
-            log.warning("non-JSON string response from LLM: %r", response[:200])
-            return ChatResponse(content=response, finish_reason="stop")
+            log.warning("non-JSON string response from LLM: %r", stripped[:300])
+            raise RuntimeError(
+                f"LLM returned unparseable response: {stripped[:120]!r}"
+            )
         return _from_openai_dict(data)
 
     choice = response.choices[0]
