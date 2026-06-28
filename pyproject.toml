@@ -46,6 +46,13 @@ skills = [
     "psutil>=5.9",
 ]
 
+# Groq chat LLM via the OpenAI-SDK-compatible client. Same wire driver
+# as stt-groq — kept as a separate extra so installs can pick exactly
+# the pieces they need. Pulls httpx transitively.
+llm-groq = [
+    "openai>=1.40",
+]
+
 [project.scripts]
 friday = "friday.main:main"
 
