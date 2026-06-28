@@ -8,7 +8,7 @@
 # Switching brain/STT/TTS is a one-line change here — never code.
 providers:
   stt: groq           # groq | local_whisper (Phase 2+)
-  llm: openai_compat  # groq | gemini | anthropic | openai_compat
+  llm: groq           # groq | gemini | anthropic | openai_compat
   tts: kokoro         # kokoro (local, free, default) | elevenlabs (cloud)
 
 # Per-provider settings. Only the section matching `providers.*` is used,
@@ -105,6 +105,6 @@ rate_limits:
     warn_at_pct: 80
 
 logging:
-  level: DEBUG
+  level: INFO
   # Every executed action is appended here with a timestamp.
   audit_path: friday_audit.log
