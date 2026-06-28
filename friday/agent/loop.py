@@ -150,6 +150,14 @@ def _select_tools_for(user_text: str, all_tools: dict) -> list[dict]:
             ("volume", "mute", "quiet", "loud", "sound", "louder", "quieter"),
             {"set_volume"},
         ),
+        (
+            ("screen", "what's on", "what is on", "my screen", "see my screen",
+             "read my screen", "show me", "on my display", "look at my",
+             "image", "picture", "photo", "what does this image",
+             "what's in this", "read this image", "describe this image",
+             "what does it say"),
+            {"read_screen", "analyze_image"},
+        ),
     ]
 
     for keywords, tools in _groups:
