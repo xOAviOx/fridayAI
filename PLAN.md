@@ -10,9 +10,9 @@
 - **Phase 0 (scaffold):** done. `python -m friday.main` boots, loads
   config (`.env` + `config.yaml` via pydantic), logs readiness, exits clean.
 - **Phase 1 (MVP loop):** chunks 1 (audio I/O), 2 (Groq Whisper STT),
-  and 3 (skills registry + 5 starter skills) are done. The TTS provider
-  (`friday/tts/kokoro.py`) is also done. Remaining: safety layer, LLM
-  provider, agent loop.
+  3 (skills registry + 5 starter skills), and 4 (safety gate) are done.
+  The TTS provider (`friday/tts/kokoro.py`) is also done. Remaining:
+  LLM provider, agent loop.
 
 ---
 
@@ -107,10 +107,16 @@ for user testing before moving on.
    tests in `tests/test_skill_registry.py`. All 35 tests pass.
    Extras: `skills = ["pyautogui>=0.9", "psutil>=5.9"]` — lazy-imported
    inside skill bodies so the registry stays import-clean.
-4. **`friday/agent/safety.py`** — dry-run gate, shell + app allowlists,
-   `destructive: bool` flag enforcement, audit log to
-   `friday_audit.log`. Built **before** the loop so safety wires in from
-   the start (the spec is emphatic: safety is not bolted on at the end).
+4. **`friday/agent/safety.py`** — **DONE.** `SafetyGate.evaluate` and
+   `evaluate_shell` return one of four decisions (`allow`, `dry_run`,
+   `needs_confirmation`, `deny`) in a fixed order: unknown skill →
+   deny; off-allowlist `open_app` → needs_confirmation; destructive
+   outside dry-run → needs_confirmation; dry-run gate last. Allowlist
+   matching is case-insensitive for apps, exact for shell. Every
+   decision is appended as a JSON line to `friday_audit.log` via the
+   existing `audit()` helper. Separate `record_execution(...)` event
+   for the executor (chunk 6) to log realized outcomes. 18 tests in
+   `tests/test_safety.py` cover all four axes plus audit-log content.
 5. **`friday/llm/groq_provider.py`** — Groq chat with tool-calling,
    sliding-window history. `friday/utils/tokens.py` (usage tracking +
    429 retry-after backoff) lands with it.
@@ -184,7 +190,7 @@ friday/
   audio/encoding.py    # DONE   — float32 → PCM16 helper for STT (lands with chunk 2)
   skills/registry.py   # DONE   — chunk 3 (@skill + SkillRegistry + JSON-schema gen)
   skills/builtin.py    # DONE   — chunk 3 (5 starter skills)
-  agent/safety.py      # TODO   — chunk 4
+  agent/safety.py      # DONE   — chunk 4 (gate + allowlists + audit)
   agent/loop.py        # TODO   — chunk 6
   agent/router.py      # TODO   — chunk 6
   agent/executor.py    # TODO   — chunk 6

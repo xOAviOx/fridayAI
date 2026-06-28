@@ -200,6 +200,37 @@ The schema generator is covered by `tests/test_skill_schema.py`:
 python -m pytest tests/ -v
 ```
 
+## Safety gate
+
+Every tool call FRIDAY proposes routes through `friday/agent/safety.py`
+before anything actually runs. `SafetyGate.evaluate(skill_name, args)`
+returns one of four decisions:
+
+- `allow` — execute the skill.
+- `dry_run` — `safety.dry_run` is on; log the intent, do nothing.
+- `needs_confirmation` — destructive skill outside dry-run, or an
+  off-allowlist `open_app`/shell command. The executor (chunk 6) is
+  responsible for prompting the user.
+- `deny` — unknown skill, empty shell command, or open_app with no
+  name. Hard refuse.
+
+Every decision is appended as one JSON line to `friday_audit.log`:
+
+```json
+{"ts": "2026-06-28T06:07:16+00:00", "event": "skill_invoke", "skill": "open_app",
+ "arguments": {"name": "notion"}, "decision": "needs_confirmation",
+ "reason": "app 'notion' is not in app_allowlist",
+ "app": "notion", "allowlist": ["chrome", "code", "firefox", "notepad", "spotify"]}
+```
+
+`destructive=True` is the marker the gate reads off each skill — only
+`type_text` carries it among the five builtins. Off-allowlist apps
+get the same `needs_confirmation` treatment.
+
+Defaults in `config.yaml` are paranoid: `dry_run: true`,
+`enable_code_exec: false`, `enable_computer_use: false`. Keep them on
+throughout Phase 1.
+
 ## Layout
 
 ```
@@ -221,6 +252,7 @@ friday/
   audio/             # mic capture + playback (Phase 1)
   skills/registry.py # @skill decorator + SkillRegistry + JSON-schema generator
   skills/builtin.py  # the five starter skills (open_app, web_search, …)
+  agent/safety.py    # SafetyGate: dry-run + allowlists + destructive flag + audit
   agent/             # loop, router, executor, safety (Phase 1+)
   codeexec/          # sandboxed code execution (Phase 3)
   computeruse/       # screenshot + pyautogui driver (Phase 4)
