@@ -276,6 +276,26 @@ uv sync --extra llm-groq
 pip install -e ".[llm-groq]"
 ```
 
+## Run the full Phase 1 loop
+
+```bash
+# Everything wired together: PTT → Groq Whisper → Groq LLM (with tool
+# calling against the skills registry) → SafetyGate (dry-run) → Kokoro.
+uv sync --extra audio --extra tts-kokoro --extra stt-groq --extra llm-groq --extra skills
+
+python -m friday.agent.loop
+```
+
+Hold `ctrl+space`, say *"Open Spotify and play music"*, release. FRIDAY
+transcribes via Groq Whisper, the model picks `open_app` and
+`media_control` from the registry, both gate as `dry_run`, and Kokoro
+speaks the verbal confirmation. `ctrl+shift+esc` quits and hard-cuts
+in-flight audio.
+
+This is the brief's acceptance gate for Phase 1. Under
+`safety.dry_run: true` nothing actually executes — the audit log
+records what would have happened.
+
 ## Layout
 
 ```
@@ -298,6 +318,9 @@ friday/
   skills/registry.py # @skill decorator + SkillRegistry + JSON-schema generator
   skills/builtin.py  # the five starter skills (open_app, web_search, …)
   agent/safety.py    # SafetyGate: dry-run + allowlists + destructive flag + audit
+  agent/router.py    # ChatResponse → RouteResult(speech, tool_calls)
+  agent/executor.py  # one ToolCall through SafetyGate → tool ChatMessage
+  agent/loop.py      # `python -m friday.agent.loop` — the full PTT conversation
   llm/groq_provider.py # Groq chat with tool calling + budget-tracked retries
   llm/history.py     # SlidingWindowHistory: sticky system + last N user turns
   utils/tokens.py    # BudgetTracker: RPM/TPM/RPD gating + 429 retry-after

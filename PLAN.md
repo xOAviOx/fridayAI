@@ -9,11 +9,12 @@
 
 - **Phase 0 (scaffold):** done. `python -m friday.main` boots, loads
   config (`.env` + `config.yaml` via pydantic), logs readiness, exits clean.
-- **Phase 1 (MVP loop):** chunks 1 (audio I/O), 2 (Groq Whisper STT),
-  3 (skills registry + 5 starter skills), 4 (safety gate), and 5
-  (Groq LLM + budget tracker + sliding window) are done. The TTS
-  provider (`friday/tts/kokoro.py`) is also done. Remaining: agent
-  loop (chunk 6).
+- **Phase 1 (MVP loop):** **DONE.** All six chunks shipped: audio I/O,
+  Groq Whisper STT, skills registry + 5 starter skills, safety gate,
+  Groq LLM + budget tracker + sliding window, and the agent loop
+  itself. `python -m friday.agent.loop` runs the brief's acceptance
+  gate end-to-end ("open Spotify and play music" → tool-calls →
+  dry-run audit → verbal confirmation).
 
 ---
 
@@ -138,8 +139,25 @@ for user testing before moving on.
    end-to-end (the model correctly picks `open_app` from the chunk 3
    registry when asked to open Spotify).
 6. **`friday/agent/loop.py` + `router.py` + `executor.py`** —
-   orchestration. Done when "open Spotify and play music" runs the full
-   loop end-to-end with verbal confirmation.
+   **DONE.** `Router` is a pure function (`ChatResponse → RouteResult`)
+   splitting model output into speech + tool calls; `is_terminal` is
+   true exactly when there are no tool calls left, which is the
+   loop's stop condition. `Executor` runs one `ToolCall` through the
+   `SafetyGate`, dispatches via the registry when allowed, captures
+   exceptions as `[error] …` strings, and renders non-allow decisions
+   as synthetic `[dry_run]` / `[needs_confirmation]` / `[denied]`
+   tool results so the LLM can react. `AgentLoop` ties everything to
+   the audio I/O: PTT press → mic capture → STT → LLM ↔ executor
+   round-trips (bounded to 6 hops) → TTS, with the panic key cutting
+   playback hard. `python -m friday.agent.loop` is the daemon entry
+   point. 16 new tests across `tests/test_router.py` (spec-required)
+   and `tests/test_executor.py`. Total suite: 108 passing in <0.2s.
+   The brief's acceptance gate was verified live against the real
+   Groq API — "Open Spotify and play music" produced `open_app` +
+   `media_control` tool calls in one hop, both gated to `dry_run`,
+   followed by the verbal confirmation "I opened Spotify and started
+   playing music." The audit log captured both `skill_invoke`
+   `dry_run` decisions cleanly.
 
 ---
 
@@ -209,9 +227,9 @@ friday/
   skills/registry.py   # DONE   — chunk 3 (@skill + SkillRegistry + JSON-schema gen)
   skills/builtin.py    # DONE   — chunk 3 (5 starter skills)
   agent/safety.py      # DONE   — chunk 4 (gate + allowlists + audit)
-  agent/loop.py        # TODO   — chunk 6
-  agent/router.py      # TODO   — chunk 6
-  agent/executor.py    # TODO   — chunk 6
+  agent/router.py      # DONE   — chunk 6 (ChatResponse → RouteResult)
+  agent/executor.py    # DONE   — chunk 6 (one ToolCall through the gate)
+  agent/loop.py        # DONE   — chunk 6 (full PTT conversation daemon)
   codeexec/            # Phase 3
   computeruse/         # Phase 4
 ```
