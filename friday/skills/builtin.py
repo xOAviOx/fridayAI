@@ -37,6 +37,7 @@ import sys
 import webbrowser
 from pathlib import Path
 from typing import Literal
+import urllib.request
 from urllib.parse import quote_plus
 
 from friday.skills.registry import skill
@@ -603,12 +604,109 @@ def delete_folder(path: str) -> str:
     return f"deleted folder and all contents: {p}"
 
 
+# --------------------------------------------------------------------------- #
+# Expanded system metrics                                                      #
+# --------------------------------------------------------------------------- #
+
+
+@skill(description="Return RAM usage: total, used, and free memory.")
+def get_ram_usage() -> str:
+    """Return current RAM usage in human-readable form.
+
+    Reports total installed RAM, how much is currently used, and
+    how much is free/available — plus the usage percentage.
+    """
+    try:
+        import psutil  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "get_ram_usage requires psutil. Install skills extras:\n"
+            "    uv sync --extra skills"
+        ) from exc
+
+    vm = psutil.virtual_memory()
+
+    def _fmt(b: int) -> str:
+        if b >= 1_073_741_824:
+            return f"{b / 1_073_741_824:.1f} GB"
+        return f"{b / 1_048_576:.0f} MB"
+
+    return (
+        f"RAM: {_fmt(vm.used)} used / {_fmt(vm.total)} total "
+        f"({vm.percent:.0f}% used, {_fmt(vm.available)} free)"
+    )
+
+
+@skill(description="Return disk usage for the main drive.")
+def get_disk_usage() -> str:
+    """Return disk space usage for the root / main drive.
+
+    Reports total capacity, used space, free space, and usage
+    percentage for the filesystem mounted at ``/`` (or ``C:\\``
+    on Windows).
+    """
+    try:
+        import psutil  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "get_disk_usage requires psutil. Install skills extras:\n"
+            "    uv sync --extra skills"
+        ) from exc
+
+    mount = "C:\\" if sys.platform == "win32" else "/"
+    disk = psutil.disk_usage(mount)
+
+    def _fmt(b: int) -> str:
+        if b >= 1_099_511_627_776:
+            return f"{b / 1_099_511_627_776:.1f} TB"
+        return f"{b / 1_073_741_824:.1f} GB"
+
+    return (
+        f"Disk ({mount}): {_fmt(disk.used)} used / {_fmt(disk.total)} total "
+        f"({disk.percent:.0f}% used, {_fmt(disk.free)} free)"
+    )
+
+
+@skill(description="Return the machine's local and public IP addresses.")
+def get_ip_address() -> str:
+    """Return local and public IP addresses.
+
+    Local IP is read from the default network interface. Public IP is
+    fetched from ``https://api.ipify.org`` (requires internet access).
+    """
+    import socket  # stdlib — always available
+
+    # Local IP via a dummy UDP connection (never actually sends data).
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+    except Exception:
+        local_ip = "unknown"
+
+    # Public IP via ipify.
+    try:
+        req = urllib.request.Request(
+            "https://api.ipify.org",
+            headers={"User-Agent": "FRIDAY-AI/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            public_ip = resp.read().decode("utf-8").strip()
+    except Exception:
+        public_ip = "unavailable (no internet?)"
+
+    return f"Local IP: {local_ip} | Public IP: {public_ip}"
+
+
 __all__ = [
     "close_app",
     "create_folder",
     "delete_file",
     "delete_folder",
     "get_clipboard",
+    "get_disk_usage",
+    "get_ip_address",
+    "get_ram_usage",
     "list_running_apps",
     "media_control",
     "open_app",

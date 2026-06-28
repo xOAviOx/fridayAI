@@ -21,11 +21,16 @@ from friday.skills.registry import (
     skill,
 )
 
-# Side-effect import — the @skill decorators in this module populate
+# Side-effect import — the @skill decorators in these modules populate
 # ``default_registry``. Kept after the registry imports so the registry
 # exists by the time the decorators run.
-from friday.skills import builtin as builtin  # noqa: F401
-from friday.skills import spotify as spotify  # noqa: F401
+from friday.skills import briefing as briefing  # noqa: F401  Phase 4.1
+from friday.skills import builtin as builtin    # noqa: F401
+from friday.skills import memory as memory      # noqa: F401  Phase 3.4
+from friday.skills import spotify as spotify    # noqa: F401
+from friday.skills import timers as timers      # noqa: F401  Phase 3.5
+from friday.skills import weather as weather    # noqa: F401  Phase 3.2
+from friday.skills import web as web            # noqa: F401  Phase 3.3
 
 __all__ = [
     "Skill",

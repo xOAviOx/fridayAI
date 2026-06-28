@@ -63,6 +63,7 @@ from friday.llm.base import ChatMessage
 from friday.llm.groq_provider import GroqLLM
 from friday.llm.history import SlidingWindowHistory
 from friday.skills import default_registry
+from friday.skills import timers as timers_module
 from friday.stt.groq_whisper import GroqWhisperSTT
 from friday.tts.base import AudioChunk
 from friday.tts.kokoro import KokoroTTS
@@ -75,19 +76,28 @@ log = logging.getLogger("friday.agent.loop")
 # Inject the real home directory so the LLM picks correct file paths.
 _HOME = Path.home()
 
+import datetime as _dt
+
+_NOW = _dt.datetime.now()
+_GREETING = (
+    "Good morning" if _NOW.hour < 12
+    else "Good afternoon" if _NOW.hour < 17
+    else "Good evening"
+)
+
 SYSTEM_PROMPT = (
-    "You are FRIDAY, a chill voice assistant — talk like a smart friend, not a corporate bot. "
-    "Be casual, natural, use contractions, keep it short (under 20 words unless asked for detail). "
-    "Never say 'Certainly!', 'Sure!', 'Of course!' or any stiff filler. Just do the thing and say it plainly. "
-    "Call tools to act on the user's machine without asking for confirmation. "
-    "IMPORTANT: trust every tool result — do NOT call read_file or any other "
-    "tool to verify what a previous tool already confirmed. After the last "
-    "needed tool call returns, reply immediately in one short casual sentence. "
+    "You are FRIDAY, a sharp voice assistant — talk like a brilliant friend who happens to know everything. "
+    "Be casual, natural, use contractions. Keep replies under 25 words unless the user explicitly wants detail. "
+    "Never say 'Certainly!', 'Sure!', 'Of course!', 'Absolutely!' or any corporate filler. "
+    "Just do the thing and confirm it plainly. Occasionally call the user 'boss' — naturally, not every time. "
+    "You have memory (remember/recall), timers, weather, real web search, and full machine control. "
+    "Call tools to act without asking for permission — that's why you exist. "
+    "Trust every tool result. After the last needed tool call, reply in one short sentence. "
     "If a result starts with [dry_run] treat it as succeeded; "
-    "if [needs_confirmation] or [denied], tell the user what blocked it. "
-    f"Home directory: {_HOME}. "
-    f"Desktop: {_HOME}/Desktop. Downloads: {_HOME}/Downloads. "
-    "Always use full absolute paths for file operations."
+    "if [needs_confirmation] or [denied], tell the user plainly what was blocked. "
+    f"Home directory: {_HOME}. Desktop: {_HOME}/Desktop. Downloads: {_HOME}/Downloads. "
+    "Always use full absolute paths for file operations. "
+    "Current time: " + _NOW.strftime("%I:%M %p, %A %B %d %Y") + "."
 )
 
 _MAX_TOOL_HOPS = 4
@@ -259,19 +269,34 @@ class AgentLoop:
     # ----- lifecycle --------------------------------------------------------
 
     def run(self) -> int:
+        # Wire the timer / reminder system to this loop's TTS speaker.
+        timers_module.set_speak_callback(self._speak_sync)
+
         self._hotkeys.start()
         log.info(
-            "agent ready (phase 2). hold %s to talk, %s to quit. "
-            "barge-in supported — press %s during playback to interrupt. "
+            "agent ready (phase 3). hold %s to talk, %s to quit. "
+            "barge-in supported. "
             "(brain=%s, ears=%s, mouth=%s, dry_run=%s, streaming=True)",
             self._cfg.hotkeys.push_to_talk,
             self._cfg.hotkeys.panic,
-            self._cfg.hotkeys.push_to_talk,
             self._cfg.providers.llm,
             self._cfg.providers.stt,
             self._cfg.providers.tts,
             self._cfg.safety.dry_run,
         )
+
+        # Startup announcement — give the TTS stack half a second to
+        # warm up, then speak. Non-fatal if it fails.
+        import threading as _t
+        def _announce() -> None:
+            import time as _time
+            _time.sleep(0.6)
+            try:
+                self._speak_sync("Systems online. Ready when you are, boss.")
+            except Exception:
+                log.debug("startup announcement failed — not critical", exc_info=True)
+        _t.Thread(target=_announce, daemon=True, name="friday-announce").start()
+
         try:
             self._quit.wait()
         except KeyboardInterrupt:
