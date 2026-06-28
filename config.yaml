@@ -15,9 +15,9 @@ providers:
 # but the others are validated too so a typo fails loudly.
 llm:
   groq:
-    # llama-3.3-70b-versatile : smarter, but only 6k TPM on Groq free tier
-    # llama-3.1-8b-instant    : 30k TPM on free tier — better for real-time use
-    model: llama-3.1-8b-instant
+    # llama-3.3-70b-versatile : required for reliable tool calling with 30+ tools
+    # llama-3.1-8b-instant    : 30k TPM but fails tool calls with many schemas
+    model: llama-3.3-70b-versatile
     base_url: https://api.groq.com/openai/v1
   gemini:
     model: gemini-2.5-flash

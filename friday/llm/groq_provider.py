@@ -30,6 +30,14 @@ import logging
 import re
 from typing import Any, Iterator
 
+
+class ToolCallError(RuntimeError):
+    """Raised when the LLM fails to generate a valid tool call.
+
+    The agent loop catches this and retries the turn without tools so
+    the user always gets *some* response rather than a crash.
+    """
+
 from friday.llm.base import (
     ChatMessage,
     ChatResponse,
@@ -619,44 +627,58 @@ class StreamedResponse:
         finish_reason = "stop"
         usage: TokenUsage | None = None
 
-        for chunk in self._stream:
-            log.debug("stream chunk: %s", chunk)
-            # The final usage-only chunk (stream_options.include_usage)
-            # arrives with an empty choices list.
-            if not chunk.choices:
-                raw_u = getattr(chunk, "usage", None)
-                if raw_u is not None:
-                    usage = _parse_usage(raw_u)
-                continue
+        try:
+            for chunk in self._stream:
+                log.debug("stream chunk: %s", chunk)
+                # The final usage-only chunk (stream_options.include_usage)
+                # arrives with an empty choices list.
+                if not chunk.choices:
+                    raw_u = getattr(chunk, "usage", None)
+                    if raw_u is not None:
+                        usage = _parse_usage(raw_u)
+                    continue
 
-            choice = chunk.choices[0]
-            delta = choice.delta
+                choice = chunk.choices[0]
+                delta = choice.delta
 
-            # Text delta — yield immediately so TTS can start.
-            text_piece = getattr(delta, "content", None)
-            if text_piece:
-                full_text += text_piece
-                yield text_piece
+                # Text delta — yield immediately so TTS can start.
+                text_piece = getattr(delta, "content", None)
+                if text_piece:
+                    full_text += text_piece
+                    yield text_piece
 
-            # Tool-call deltas — accumulate argument strings.
-            tc_deltas = getattr(delta, "tool_calls", None) or []
-            for tc_d in tc_deltas:
-                idx: int = tc_d.index
-                while len(raw_tcs) <= idx:
-                    raw_tcs.append({"id": "", "name": "", "args": ""})
-                if tc_d.id:
-                    raw_tcs[idx]["id"] = tc_d.id
-                fn = getattr(tc_d, "function", None)
-                if fn is not None:
-                    if getattr(fn, "name", None):
-                        raw_tcs[idx]["name"] = fn.name
-                    arg_piece = getattr(fn, "arguments", None)
-                    if arg_piece:
-                        raw_tcs[idx]["args"] += arg_piece
+                # Tool-call deltas — accumulate argument strings.
+                tc_deltas = getattr(delta, "tool_calls", None) or []
+                for tc_d in tc_deltas:
+                    idx: int = tc_d.index
+                    while len(raw_tcs) <= idx:
+                        raw_tcs.append({"id": "", "name": "", "args": ""})
+                    if tc_d.id:
+                        raw_tcs[idx]["id"] = tc_d.id
+                    fn = getattr(tc_d, "function", None)
+                    if fn is not None:
+                        if getattr(fn, "name", None):
+                            raw_tcs[idx]["name"] = fn.name
+                        arg_piece = getattr(fn, "arguments", None)
+                        if arg_piece:
+                            raw_tcs[idx]["args"] += arg_piece
 
-            fr = getattr(choice, "finish_reason", None)
-            if fr:
-                finish_reason = fr
+                fr = getattr(choice, "finish_reason", None)
+                if fr:
+                    finish_reason = fr
+
+        except Exception as exc:
+            # Groq raises APIError("Failed to call a function…") when the
+            # model generates a malformed tool-call JSON.  Wrap it so the
+            # agent loop can catch ToolCallError specifically and retry.
+            msg = str(exc)
+            if "Failed to call a function" in msg or "failed_generation" in msg:
+                self._exhausted = True
+                raise ToolCallError(
+                    "Model failed to generate a valid tool call — "
+                    "this usually means too many tools or a model limitation."
+                ) from exc
+            raise  # re-raise anything else unchanged
 
         self._exhausted = True
 
@@ -732,4 +754,4 @@ def _assemble_response(
     )
 
 
-__all__ = ["GroqLLM", "StreamedResponse"]
+__all__ = ["GroqLLM", "StreamedResponse", "ToolCallError"]

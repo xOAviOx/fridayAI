@@ -60,7 +60,7 @@ from friday.audio.hotkey import HotkeyController
 from friday.audio.playback import Speaker
 from friday.config import Config, ConfigError, load_config
 from friday.llm.base import ChatMessage
-from friday.llm.groq_provider import GroqLLM
+from friday.llm.groq_provider import GroqLLM, ToolCallError
 from friday.llm.history import SlidingWindowHistory
 from friday.skills import default_registry
 from friday.skills import timers as timers_module
@@ -440,13 +440,45 @@ class AgentLoop:
             splitter = SentenceSplitter()
 
             # --- drain token stream ---
-            for token in streamed:
-                if self._turn_cancel.is_set():
-                    pipeline.cancel()
-                    streamed.response  # drain HTTP stream cleanly
-                    return
-                for sentence in splitter.push(token):
+            try:
+                for token in streamed:
+                    if self._turn_cancel.is_set():
+                        pipeline.cancel()
+                        streamed.response  # drain HTTP stream cleanly
+                        return
+                    for sentence in splitter.push(token):
+                        pipeline.push(sentence)
+            except ToolCallError:
+                # Model failed to produce a valid tool call (too many tools,
+                # or a model-specific limitation). Retry this hop without
+                # tools — the user gets a plain spoken answer instead of silence.
+                log.warning(
+                    "hop %d: tool call generation failed — retrying without tools", hop + 1
+                )
+                pipeline.cancel()
+                streamed_plain = self._llm.stream_chat(
+                    self._history.messages(),
+                    tools=[],        # no tools — forces a plain text reply
+                    max_tokens=512,
+                )
+                pipeline = _TTSPipeline(self._tts, self._speaker)
+                splitter = SentenceSplitter()
+                for token in streamed_plain:
+                    if self._turn_cancel.is_set():
+                        pipeline.cancel()
+                        return
+                    for sentence in splitter.push(token):
+                        pipeline.push(sentence)
+                for sentence in splitter.flush():
                     pipeline.push(sentence)
+                pipeline.finish()
+                pipeline.wait()
+                self._history.add(ChatMessage(
+                    role="assistant",
+                    content=streamed_plain.response.content,
+                    tool_calls=[],
+                ))
+                return
 
             # Flush any trailing fragment (e.g. "Got it!" without a period)
             for sentence in splitter.flush():
