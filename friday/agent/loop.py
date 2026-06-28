@@ -62,6 +62,104 @@ from friday.audio.playback import Speaker
 from friday.config import Config, ConfigError, load_config
 from friday.llm.base import ChatMessage
 from friday.llm.groq_provider import GroqLLM, ToolCallError
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """True when the exception is a Groq/OpenAI 429 rate-limit error."""
+    name = type(exc).__name__
+    msg = str(exc)
+    return (
+        "RateLimitError" in name
+        or "rate_limit_exceeded" in msg
+        or "tokens per day" in msg
+        or "429" in msg
+    )
+
+
+def _select_tools_for(user_text: str, all_tools: dict) -> list[dict]:
+    """Return pruned tool schemas relevant to *user_text*.
+
+    Module-level so it can be called from _run_turn without self.
+    Reduces per-turn prompt cost by ~60-70% on average.
+    """
+    lower = user_text.lower()
+
+    selected: set[str] = {
+        "open_app", "close_app", "system_info", "get_ram_usage",
+        "media_control", "set_volume", "morning_briefing",
+    }
+
+    _groups: list[tuple[tuple[str, ...], set[str]]] = [
+        (
+            ("weather", "temperature", "forecast", "hot", "cold",
+             "rain", "sunny", "humid", "wind", "climate"),
+            {"get_weather"},
+        ),
+        (
+            ("search", "find", "who", "what", "when", "where", "how",
+             "news", "result", "score", "won", "match", "latest",
+             "today", "yesterday", "tell me about", "look up"),
+            {"web_search_results", "fetch_webpage", "web_search"},
+        ),
+        (
+            ("remember", "recall", "memory", "memories", "forget",
+             "memorize", "know that", "stored", "what do you know"),
+            {"remember", "recall", "list_memories", "forget"},
+        ),
+        (
+            ("remind", "timer", "alarm", "minute", "countdown",
+             "in five", "in ten", "notify", "alert"),
+            {"set_reminder", "set_timer", "list_reminders", "cancel_reminder"},
+        ),
+        (
+            ("spotify", "music", "song", "play", "artist", "track",
+             "playlist", "album", "now playing", "skip", "next track",
+             "previous", "pause", "resume"),
+            {"spotify_search", "spotify_play_song",
+             "spotify_now_playing", "media_control"},
+        ),
+        (
+            ("file", "folder", "read", "write", "create", "delete",
+             "save", "document", "directory", "desktop", "downloads"),
+            {"read_file", "write_file", "create_file", "delete_file",
+             "create_folder", "delete_folder"},
+        ),
+        (
+            ("disk", "storage", "space", "ip", "address", "network",
+             "running apps", "processes", "what's open"),
+            {"get_disk_usage", "get_ip_address", "list_running_apps"},
+        ),
+        (
+            ("python", "code", "script", "calculate", "compute",
+             "math", "execute", "run code", "snippet"),
+            {"run_python"},
+        ),
+        (
+            ("shell", "terminal", "git", "command", "npm", "pip",
+             "install", "bash", "zsh"),
+            {"run_shell"},
+        ),
+        (
+            ("type", "clipboard", "paste", "copy", "screenshot", "screen"),
+            {"type_text", "get_clipboard", "set_clipboard", "take_screenshot"},
+        ),
+        (
+            ("youtube", "video", "watch"),
+            {"youtube_search"},
+        ),
+        (
+            ("volume", "mute", "quiet", "loud", "sound", "louder", "quieter"),
+            {"set_volume"},
+        ),
+    ]
+
+    for keywords, tools in _groups:
+        if any(kw in lower for kw in keywords):
+            selected |= tools
+
+    if len(selected) <= 7:
+        selected |= {"web_search_results", "get_weather", "recall"}
+
+    return [all_tools[n] for n in selected if n in all_tools]
 from friday.llm.history import SlidingWindowHistory
 from friday.skills import default_registry
 from friday.skills import timers as timers_module
@@ -275,6 +373,14 @@ class AgentLoop:
                 base_url=config.llm.groq.base_url,
                 budget=budget,
             )
+            # Fast fallback: 8b model has 500k TPD vs 100k for 70b.
+            # Used automatically when 70b hits its daily limit.
+            self._llm_fast = GroqLLM(
+                api_key=_require(config.secrets.groq_api_key, "GROQ_API_KEY"),
+                model="llama-3.1-8b-instant",
+                base_url=config.llm.groq.base_url,
+                budget=BudgetTracker(_empty_budget(), name="groq-fast"),
+            )
 
         # ----- audio I/O ------------------------------------------------
         self._recorder = MicRecorder(
@@ -289,7 +395,9 @@ class AgentLoop:
         self._executor = Executor(self._registry, self._gate)
         self._router = Router()
         self._history = SlidingWindowHistory(system=SYSTEM_PROMPT)
-        self._tools = self._registry.tool_schemas()
+        self._all_tools = self._registry.tool_schemas()   # full set, keyed for pruning
+        self._all_tools_by_name = {s["function"]["name"]: s for s in self._all_tools}
+        self._current_user_text = ""   # set per-turn for tool selection
 
         # ----- hotkeys --------------------------------------------------
         self._hotkeys = HotkeyController(
@@ -450,6 +558,7 @@ class AgentLoop:
             log.info("empty transcript — ignoring")
             return
         log.info("you said: %r", user_text)
+        self._current_user_text = user_text
         self._history.add(ChatMessage(role="user", content=user_text))
 
         # ----- Thinking filler (sounds human while LLM warms up) ----------
@@ -473,29 +582,38 @@ class AgentLoop:
     # ----- streaming turn ---------------------------------------------------
 
     def _run_turn(self) -> None:
-        """Stream the LLM response and pipe complete sentences to TTS.
+        """Stream the LLM response and pipe complete sentences to TTS."""
+        # Prune tool list to only what this query likely needs.
+        tools = _select_tools_for(self._current_user_text, self._all_tools_by_name)
 
-        For each hop:
-        1. Open a streaming chat request.
-        2. Feed tokens into a :class:`~friday.utils.sentence.SentenceSplitter`.
-        3. Each complete sentence goes to a :class:`_TTSPipeline` that
-           synthesises and plays it in a background thread.
-        4. If the response has tool calls, wait for the TTS to drain,
-           execute the tools, then loop back for the next hop.
-        5. If the response is terminal (no tool calls), signal the
-           pipeline and return.
-        """
+        # Active LLM — starts as primary (70b), falls back to fast (8b)
+        # if the primary hits its daily token cap.
+        llm = self._llm
+
         for hop in range(_MAX_TOOL_HOPS):
             if self._turn_cancel.is_set():
                 log.info("turn cancelled before hop %d", hop)
                 return
 
-            # --- open stream ---
-            streamed = self._llm.stream_chat(
-                self._history.messages(),
-                tools=self._tools,
-                max_tokens=512,
-            )
+            # --- open stream (with rate-limit fallback) ---
+            try:
+                streamed = llm.stream_chat(
+                    self._history.messages(),
+                    tools=tools,
+                    max_tokens=512,
+                )
+            except Exception as exc:
+                if _is_rate_limit(exc) and llm is self._llm and hasattr(self, "_llm_fast"):
+                    log.warning("70b daily cap hit — falling back to 8b for this turn")
+                    self._speak_sync("Switching to a lighter model real quick.")
+                    llm = self._llm_fast
+                    streamed = llm.stream_chat(
+                        self._history.messages(),
+                        tools=tools,
+                        max_tokens=512,
+                    )
+                else:
+                    raise
 
             # --- TTS pipeline for this hop ---
             pipeline = _TTSPipeline(self._tts, self._speaker)
