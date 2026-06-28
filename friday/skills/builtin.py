@@ -79,7 +79,7 @@ def open_app(name: str) -> str:
     return f"launched {target}"
 
 
-@skill(description="Open DuckDuckGo search results in the browser.")
+@skill(description="Open Google search results in the browser.")
 def web_search(query: str) -> str:
     """Open the default browser to search results for ``query``.
 
@@ -96,6 +96,23 @@ def web_search(query: str) -> str:
     url = f"https://www.google.com/search?q={quote_plus(q)}"
     webbrowser.open_new_tab(url)
     return f"opened browser to results for: {q}"
+
+
+@skill(description="Search YouTube and open results in the browser.")
+def youtube_search(query: str) -> str:
+    """Open the default browser to YouTube search results for ``query``.
+
+    Parameters
+    ----------
+    query:
+        Search terms, e.g. ``"lo-fi beats"``, ``"how to make pasta"``.
+    """
+    q = query.strip()
+    if not q:
+        raise ValueError("youtube_search requires a non-empty query")
+    url = f"https://www.youtube.com/results?search_query={quote_plus(q)}"
+    webbrowser.open_new_tab(url)
+    return f"opened YouTube search for: {q}"
 
 
 @skill(description="Send a media key: play_pause, next, previous, volume_up, volume_down.")
@@ -597,4 +614,5 @@ __all__ = [
     "type_text",
     "web_search",
     "write_file",
+    "youtube_search",
 ]
