@@ -139,13 +139,25 @@ class SkillRegistry:
     def dispatch(self, name: str, arguments: dict[str, Any]) -> Any:
         """Look up ``name`` and call it with ``**arguments``.
 
-        Raises ``KeyError`` for unknown skills; argument validation is
-        the LLM's job in Phase 1 (the schema is what we ship to it).
+        Raises ``KeyError`` for unknown skills. Unknown keyword arguments
+        (hallucinated by smaller/fallback LLMs) are silently dropped with a
+        warning so a single spurious key doesn't crash an otherwise valid call.
         """
         skill = self.get(name)
         if skill is None:
             raise KeyError(f"unknown skill: {name!r}")
-        return skill.call(**arguments)
+
+        # Filter to only the params the function actually accepts.
+        known = set(inspect.signature(skill.func).parameters)
+        filtered = {k: v for k, v in arguments.items() if k in known}
+        dropped = set(arguments) - known
+        if dropped:
+            log.warning(
+                "dispatch(%s): dropped unknown arg(s) %s — LLM hallucinated them",
+                name,
+                sorted(dropped),
+            )
+        return skill.call(**filtered)
 
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and name in self._skills

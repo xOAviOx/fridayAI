@@ -1,26 +1,29 @@
-"""Phase 7 — Always-on wake word detection + VAD-based recording.
+"""Phase 7 — Always-on VAD + Whisper wake word detection.
 
-Replaces push-to-talk with a hands-free flow:
+Why not openwakeword?
+    The pretrained openwakeword models (hey_jarvis, alexa, etc.) were
+    trained primarily on American English.  They score near 0 for many
+    non-American accents, so the threshold can never be met.
 
-1. ``WakeWordListener`` holds a single continuous mic stream at 16 kHz.
-   A sounddevice *callback* fires every 80 ms (1 280 samples) and puts
-   audio into a queue — the same pattern openwakeword's own examples use.
-2. The main thread drains the queue and scores each chunk with
-   openwakeword.  When the score exceeds ``sensitivity`` the listener
-   enters *recording mode*.
-3. In recording mode chunks are still read from the same queue.  Each
-   1 280-sample chunk is split into 480-sample sub-frames for webrtcvad.
-   Recording ends when ``silence_ms`` of consecutive silence is detected
-   or ``max_record_s`` seconds elapse.
-4. The utterance (float32 numpy array) is passed to the ``on_wake``
-   callback — identical to what MicRecorder produced, so the turn
-   pipeline is unchanged.
+This implementation uses a two-stage pipeline that works for any accent:
+
+1. **webrtcvad** listens for speech on-device with zero latency and zero
+   API cost.  Only frames that contain actual speech pass stage 2.
+2. **Groq Whisper** transcribes the first ~1.5 s of each utterance.  If
+   the transcript contains the configured wake phrase (or a fuzzy match),
+   the listener enters full recording mode.
+
+Flow
+----
+idle → VAD hears speech → record 1.5 s → Whisper check →
+    wake phrase found: record full utterance with VAD end-detection
+                       → deliver float32 audio to on_wake callback
+    wake phrase absent: discard clip, return to idle
 
 PTT fallback
 ------------
-``ptt_start()`` / ``ptt_stop()`` inject manual start/stop that bypasses
-wake-word scoring.  The same queue supplies audio, so no second stream
-opens.  Ctrl+Space still works alongside always-on listening.
+ptt_start() / ptt_stop() skip VAD+Whisper entirely and go straight to
+full utterance recording.  Ctrl+Space still works at any time.
 """
 
 from __future__ import annotations
@@ -32,32 +35,35 @@ from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
-_OWW_CHUNK_SAMPLES = 1_280   # 80 ms @ 16 kHz — openwakeword's native chunk
-_OWW_CHUNK_MS      = 80
-_VAD_FRAME_SAMPLES = 480     # 30 ms @ 16 kHz — webrtcvad frame size
-_VAD_FRAME_MS      = 30
+_FRAME_MS      = 30          # webrtcvad frame size (10 / 20 / 30 ms)
+_FRAME_SAMPLES = 480         # 30 ms @ 16 kHz
+_QUEUE_TIMEOUT = 0.3
 
 
 class WakeWordListener:
-    """Always-on mic listener: wake word → VAD utterance → callback.
+    """Always-on VAD + Whisper listener → on_wake callback.
 
     Parameters
     ----------
     on_wake:
-        Called on the listener thread with a float32 mono numpy array of
-        the captured utterance (everything after the wake phrase).
-    model_name:
-        openwakeword model to load.  Built-in ONNX choices: ``hey_jarvis``,
-        ``alexa``, ``hey_mycroft``, ``hey_rhasspy``.
-    sensitivity:
-        Score threshold 0–1.  Start low (0.1) and raise if false positives
-        are a problem.
+        Called with a float32 mono numpy array of the full utterance
+        (the part *after* the wake phrase is stripped before delivery).
+    transcribe_fn:
+        ``transcribe_fn(pcm16_bytes, sample_rate) -> str`` — typically
+        wraps ``GroqWhisperSTT.transcribe``.  Used only for the short
+        wake-phrase check clip, not the full utterance.
+    wake_phrase:
+        The phrase to listen for.  Case-insensitive substring match
+        against the Whisper transcript.  Defaults to "hey friday";
+        common mishearings are also accepted automatically.
     vad_aggressiveness:
         webrtcvad aggressiveness 0–3.
     silence_ms:
-        Consecutive milliseconds of silence that end an utterance.
+        Consecutive silence (ms) that ends a full utterance.
     max_record_s:
         Hard cap on utterance length.
+    wake_clip_s:
+        How many seconds to record for the wake-phrase check.
     sample_rate:
         Must be 16 000 Hz.
     """
@@ -66,68 +72,48 @@ class WakeWordListener:
         self,
         *,
         on_wake: Callable[[Any], None],
-        model_name: str = "hey_jarvis",
-        sensitivity: float = 0.1,
+        transcribe_fn: Callable[[bytes, int], Any],
+        wake_phrase: str = "hey friday",
         vad_aggressiveness: int = 2,
         silence_ms: int = 900,
         max_record_s: float = 15.0,
+        wake_clip_s: float = 1.5,
         sample_rate: int = 16_000,
     ) -> None:
         try:
             import numpy as np
             import sounddevice as sd
         except ImportError as exc:
-            raise RuntimeError(
-                "WakeWordListener requires sounddevice + numpy.\n"
-                "    pip install -e '.[audio]'"
-            ) from exc
+            raise RuntimeError("Requires sounddevice + numpy.") from exc
         try:
             import webrtcvad
         except ImportError as exc:
             raise RuntimeError(
-                "WakeWordListener requires webrtcvad.\n"
-                "    pip install -e '.[wake-word]'"
-            ) from exc
-        try:
-            from openwakeword.model import Model as _OWW
-        except ImportError as exc:
-            raise RuntimeError(
-                "WakeWordListener requires openwakeword.\n"
-                "    pip install -e '.[wake-word]'"
+                "Requires webrtcvad.  Install with: pip install -e '.[wake-word]'"
             ) from exc
 
-        self._np  = np
-        self._sd  = sd
-        self._vad = webrtcvad.Vad(vad_aggressiveness)
-
-        self._model_name   = model_name
-        self._sensitivity  = sensitivity
-        self._silence_ms   = silence_ms
-        self._max_record_s = max_record_s
-        self._sample_rate  = sample_rate
-        self._on_wake      = on_wake
+        self._np            = np
+        self._sd            = sd
+        self._vad           = webrtcvad.Vad(vad_aggressiveness)
+        self._on_wake       = on_wake
+        self._transcribe    = transcribe_fn
+        self._wake_phrase   = wake_phrase.lower().strip()
+        self._silence_ms    = silence_ms
+        self._max_record_s  = max_record_s
+        self._wake_clip_s   = wake_clip_s
+        self._sample_rate   = sample_rate
 
         self._stop_event  = threading.Event()
         self._ptt_active  = threading.Event()
         self._ptt_release = threading.Event()
         self._thread: threading.Thread | None = None
 
-        # Single shared queue — the callback always fills it, the main
-        # thread always drains it regardless of detection vs recording mode.
-        self._q: queue.Queue[Any] = queue.Queue(maxsize=100)
+        # Audio queue — callback fills it, listener thread drains it.
+        self._q: queue.Queue[Any] = queue.Queue(maxsize=200)
 
-        # Download and load model.
-        log.info("loading openwakeword model %r …", model_name)
-        try:
-            import openwakeword as _oww_pkg
-            _oww_pkg.utils.download_models()
-        except Exception:
-            pass   # already cached or offline — model load below will catch errors
-
-        self._oww = _OWW(wakeword_models=[model_name], inference_framework="onnx")
         log.info(
-            "wake word listener ready — model=%r sensitivity=%.2f silence=%dms max=%.0fs",
-            model_name, sensitivity, silence_ms, max_record_s,
+            "wake word listener ready — phrase=%r vad=%d silence=%dms",
+            wake_phrase, vad_aggressiveness, silence_ms,
         )
 
     # ---- lifecycle ----------------------------------------------------------
@@ -143,7 +129,7 @@ class WakeWordListener:
 
     def stop(self) -> None:
         self._stop_event.set()
-        self._ptt_release.set()   # unblock any waiting PTT read
+        self._ptt_release.set()
         if self._thread is not None:
             self._thread.join(timeout=3.0)
             self._thread = None
@@ -151,12 +137,10 @@ class WakeWordListener:
     # ---- PTT override -------------------------------------------------------
 
     def ptt_start(self) -> None:
-        """Bypass wake-word scoring and enter recording mode now."""
         self._ptt_release.clear()
         self._ptt_active.set()
 
     def ptt_stop(self) -> None:
-        """End PTT recording; utterance delivered via on_wake callback."""
         self._ptt_active.clear()
         self._ptt_release.set()
 
@@ -167,145 +151,169 @@ class WakeWordListener:
         sd = self._sd
 
         log.info(
-            "always-on listener active — say %r or press PTT to activate",
-            self._model_name,
+            "always-on listener active — say %r or press PTT to talk",
+            self._wake_phrase,
         )
 
-        def _mic_callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
-            """Called by PortAudio every _OWW_CHUNK_SAMPLES frames."""
+        def _cb(indata: Any, frames: int, _t: Any, status: Any) -> None:
             if status:
-                log.debug("mic callback status: %s", status)
+                log.debug("mic status: %s", status)
             try:
                 self._q.put_nowait(indata.copy())
             except queue.Full:
-                pass   # drop oldest chunk rather than block the audio thread
+                pass
 
         try:
             with sd.InputStream(
                 samplerate=self._sample_rate,
                 channels=1,
                 dtype="int16",
-                blocksize=_OWW_CHUNK_SAMPLES,
-                callback=_mic_callback,
+                blocksize=_FRAME_SAMPLES,   # 30 ms frames match webrtcvad exactly
+                callback=_cb,
             ):
                 while not self._stop_event.is_set():
-
-                    # ---- PTT override ----------------------------------------
+                    # --- PTT override: skip VAD/Whisper, record immediately ---
                     if self._ptt_active.is_set():
-                        audio = self._record_ptt()
+                        audio = self._record_until_ptt_release()
                         self._deliver(audio)
                         continue
 
-                    # ---- wake-word detection ---------------------------------
+                    # --- Stage 1: wait for VAD to detect speech onset --------
+                    frame = self._get_frame()
+                    if frame is None:
+                        continue
+                    if not self._is_speech(frame):
+                        continue
+
+                    # Speech detected — collect a short clip for wake check.
+                    log.debug("speech onset detected — collecting wake clip")
+                    clip_frames = [frame]
+                    clip_samples = int(self._wake_clip_s * self._sample_rate)
+                    clip_frame_count = clip_samples // _FRAME_SAMPLES
+
+                    for _ in range(clip_frame_count - 1):
+                        f = self._get_frame()
+                        if f is None:
+                            break
+                        clip_frames.append(f)
+
+                    # --- Stage 2: Whisper wake-phrase check ------------------
+                    clip_i16 = np.concatenate([f[:, 0] for f in clip_frames])
+                    clip_f32 = clip_i16.astype(np.float32) / 32_768.0
+
+                    from friday.audio.encoding import float32_to_pcm16_bytes
                     try:
-                        chunk = self._q.get(timeout=0.5)
-                    except queue.Empty:
+                        result = self._transcribe(
+                            float32_to_pcm16_bytes(clip_f32),
+                            self._sample_rate,
+                        )
+                        transcript = (result.text or "").lower().strip()
+                    except Exception:
+                        log.debug("wake clip transcription failed", exc_info=True)
                         continue
 
-                    chunk_1d = chunk[:, 0]   # (1280, 1) → (1280,)
-                    score = self._score(chunk_1d)
+                    log.info("wake clip transcript: %r", transcript)
 
-                    if score >= 0.01:
-                        log.info(
-                            "wakeword score: %.4f  threshold=%.2f  %s",
-                            score, self._sensitivity,
-                            "█" * int(score * 40),
-                        )
+                    if not self._matches_wake_phrase(transcript):
+                        log.debug("no wake phrase — discarding clip")
+                        continue
 
-                    if score >= self._sensitivity:
-                        log.info(
-                            "wake word %r DETECTED (score=%.3f) — recording utterance",
-                            self._model_name, score,
-                        )
-                        self._oww.reset()
-                        audio = self._record_vad()
-                        self._deliver(audio)
+                    # --- Wake phrase confirmed — record full utterance -------
+                    log.info("wake phrase detected! recording full utterance…")
+                    audio = self._record_utterance_vad()
+                    self._deliver(audio)
 
         except Exception:
             log.exception("wake word listener crashed")
 
-    # ---- scoring ------------------------------------------------------------
+    # ---- wake phrase matching -----------------------------------------------
 
-    def _score(self, chunk_int16: Any) -> float:
-        """Feed one int16 chunk to openwakeword, return the max model score."""
-        pred: dict = self._oww.predict(chunk_int16)
-        if not pred:
-            return 0.0
-        return float(max(pred.values()))
+    def _matches_wake_phrase(self, transcript: str) -> bool:
+        """True if the transcript contains the wake phrase or a common mishearing."""
+        if not transcript:
+            return False
+        # Accept the configured phrase
+        if self._wake_phrase in transcript:
+            return True
+        # Common Whisper mishearings of "hey friday"
+        _aliases = [
+            "hey friday", "hey freday", "a friday", "hey fried",
+            "hey fryday", "hey, friday", "hey jarvis", "hey jarves",
+            "hi friday", "hi jarvis", "hey fry day",
+        ]
+        for alias in _aliases:
+            if alias in transcript:
+                return True
+        return False
 
-    # ---- recording: VAD mode ------------------------------------------------
+    # ---- VAD helpers --------------------------------------------------------
 
-    def _record_vad(self) -> Any:
-        """Record from the queue until silence or max_record_s."""
+    def _get_frame(self) -> Any:
+        """Pull one 30 ms frame from the queue, or None on timeout/stop."""
+        try:
+            return self._q.get(timeout=_QUEUE_TIMEOUT)
+        except queue.Empty:
+            return None
+
+    def _is_speech(self, frame: Any) -> bool:
+        try:
+            return self._vad.is_speech(frame[:, 0].tobytes(), self._sample_rate)
+        except Exception:
+            return False
+
+    # ---- utterance recording: VAD silence gate ------------------------------
+
+    def _record_utterance_vad(self) -> Any:
+        """Record until silence or max_record_s and return float32 audio."""
         np = self._np
-        # How many 80ms chunks = silence_ms of silence?
-        silence_chunks_needed = max(1, self._silence_ms // _OWW_CHUNK_MS)
-        max_chunks = int(self._max_record_s * 1_000 / _OWW_CHUNK_MS)
+        silence_frames_needed = max(1, self._silence_ms // _FRAME_MS)
+        max_frames = int(self._max_record_s * 1_000 / _FRAME_MS)
 
         frames: list[Any] = []
         consecutive_silence = 0
         speech_started = False
 
-        for _ in range(max_chunks):
+        for _ in range(max_frames):
             if self._stop_event.is_set() or self._ptt_active.is_set():
                 break
-
-            try:
-                chunk = self._q.get(timeout=0.5)
-            except queue.Empty:
+            frame = self._get_frame()
+            if frame is None:
                 break
 
-            chunk_1d = chunk[:, 0]
-            frames.append(chunk_1d.copy())
+            frames.append(frame[:, 0].copy())
 
-            # VAD: split 1280-sample chunk into 480-sample sub-frames.
-            is_speech_in_chunk = False
-            for i in range(0, _OWW_CHUNK_SAMPLES - _VAD_FRAME_SAMPLES + 1, _VAD_FRAME_SAMPLES):
-                sub = chunk_1d[i : i + _VAD_FRAME_SAMPLES]
-                if len(sub) == _VAD_FRAME_SAMPLES:
-                    try:
-                        if self._vad.is_speech(sub.tobytes(), self._sample_rate):
-                            is_speech_in_chunk = True
-                            break
-                    except Exception:
-                        is_speech_in_chunk = True
-
-            if is_speech_in_chunk:
+            if self._is_speech(frame):
                 speech_started = True
                 consecutive_silence = 0
             else:
                 consecutive_silence += 1
 
-            if speech_started and consecutive_silence >= silence_chunks_needed:
-                log.debug("silence detected — ending utterance")
+            if speech_started and consecutive_silence >= silence_frames_needed:
                 break
 
         if not frames:
             return np.zeros(0, dtype=np.float32)
 
-        # Trim trailing silence — keep one chunk for a natural cutoff.
-        keep = max(1, len(frames) - silence_chunks_needed + 1)
+        keep = max(1, len(frames) - silence_frames_needed + 1)
         audio_i16 = np.concatenate(frames[:keep])
         audio_f32 = audio_i16.astype(np.float32) / 32_768.0
         log.info("utterance recorded: %.2fs (VAD mode)", len(audio_f32) / self._sample_rate)
         return audio_f32
 
-    # ---- recording: PTT mode ------------------------------------------------
+    # ---- utterance recording: PTT gate --------------------------------------
 
-    def _record_ptt(self) -> Any:
-        """Record from the queue until PTT is released or max_record_s."""
+    def _record_until_ptt_release(self) -> Any:
+        """Record until PTT is released or max_record_s."""
         np = self._np
-        max_chunks = int(self._max_record_s * 1_000 / _OWW_CHUNK_MS)
+        max_frames = int(self._max_record_s * 1_000 / _FRAME_MS)
         frames: list[Any] = []
 
-        for _ in range(max_chunks):
+        for _ in range(max_frames):
             if self._stop_event.is_set() or self._ptt_release.is_set():
                 break
-            try:
-                chunk = self._q.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            frames.append(chunk[:, 0].copy())
+            frame = self._get_frame()
+            if frame is not None:
+                frames.append(frame[:, 0].copy())
 
         self._ptt_release.clear()
 
