@@ -93,7 +93,7 @@ def web_search(query: str) -> str:
     q = query.strip()
     if not q:
         raise ValueError("web_search requires a non-empty query")
-    url = f"https://duckduckgo.com/?q={quote_plus(q)}"
+    url = f"https://www.google.com/search?q={quote_plus(q)}"
     webbrowser.open_new_tab(url)
     return f"opened browser to results for: {q}"
 
