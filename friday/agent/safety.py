@@ -173,14 +173,17 @@ class SafetyGate:
                     allowlist=sorted(self._apps_lower),
                 )
 
-        # Destructive flag — outside dry-run, destructive always needs
-        # a human in the loop. Inside dry-run, destructive flows through
-        # to the dry-run branch below (audit logs intent, nothing runs).
+        # Destructive flag — outside dry-run, destructive skills need a
+        # human in the loop UNLESS skip_confirm_destructive is enabled.
+        # Inside dry-run, destructive flows through to the dry-run branch
+        # below (audit logs intent, nothing runs).
         if sk.destructive and not self._config.dry_run:
-            return SafetyDecision.needs_confirmation(
-                f"skill {skill_name!r} is marked destructive",
-                skill=skill_name,
-            )
+            if not self._config.skip_confirm_destructive:
+                return SafetyDecision.needs_confirmation(
+                    f"skill {skill_name!r} is marked destructive",
+                    skill=skill_name,
+                )
+            # skip_confirm_destructive=True → fall through to allow
 
         # Dry-run gate — last so the audit log shows the most specific
         # reason for not running ("destructive + dry_run" → "dry_run",

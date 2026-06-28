@@ -48,6 +48,7 @@ import logging
 import queue
 import sys
 import threading
+from pathlib import Path
 from typing import Iterator
 
 from friday.agent.executor import Executor
@@ -71,6 +72,9 @@ from friday.utils.tokens import BudgetTracker
 
 log = logging.getLogger("friday.agent.loop")
 
+# Inject the real home directory so the LLM picks correct file paths.
+_HOME = Path.home()
+
 SYSTEM_PROMPT = (
     "You are FRIDAY, a voice-controlled PC assistant. Your replies are "
     "spoken aloud, so keep them under 30 words unless the user asks for "
@@ -79,7 +83,10 @@ SYSTEM_PROMPT = (
     "confirm what you did in one short sentence. If a tool result "
     "starts with [dry_run], treat the action as having succeeded and "
     "tell the user; if it starts with [needs_confirmation] or [denied], "
-    "tell the user what blocked it."
+    "tell the user what blocked it. "
+    f"The user's home directory is {_HOME}. "
+    f"Desktop is {_HOME}/Desktop, Downloads is {_HOME}/Downloads. "
+    "Always use full absolute paths when writing or deleting files."
 )
 
 _MAX_TOOL_HOPS = 6

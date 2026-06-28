@@ -145,6 +145,11 @@ class SafetyConfig(_StrictModel):
     enable_computer_use: bool = False
     shell_allowlist: list[str] = Field(default_factory=list)
     app_allowlist: list[str] = Field(default_factory=list)
+    # When True, skills marked destructive=True are allowed to run
+    # without a confirmation step.  False (the default) blocks them so
+    # no accidental write/delete happens until you've opted in.
+    # Only meaningful when dry_run is False.
+    skip_confirm_destructive: bool = False
 
 
 class RateLimitConfig(_StrictModel):

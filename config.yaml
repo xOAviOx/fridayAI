@@ -15,7 +15,9 @@ providers:
 # but the others are validated too so a typo fails loudly.
 llm:
   groq:
-    model: llama-3.3-70b-versatile        # default brain; cheap + fast
+    # llama-3.3-70b-versatile : smarter, but only 6k TPM on Groq free tier
+    # llama-3.1-8b-instant    : 30k TPM on free tier — better for real-time use
+    model: llama-3.1-8b-instant
     base_url: https://api.groq.com/openai/v1
   gemini:
     model: gemini-2.5-flash
@@ -65,6 +67,10 @@ safety:
   enable_code_exec: false
   enable_computer_use: false
 
+  # Allow destructive skills (write_file, delete_file, etc.) to run
+  # without a confirmation step. Safe to enable once you trust FRIDAY.
+  skip_confirm_destructive: true
+
   # Anything outside these lists requires explicit confirmation.
   shell_allowlist:
     - echo
@@ -84,7 +90,7 @@ safety:
 rate_limits:
   groq:
     requests_per_min: 30
-    tokens_per_min: 6000        # the real bottleneck on free tier
+    tokens_per_min: 30000       # llama-3.1-8b-instant free tier; 6000 for 70b
     requests_per_day: 14400
     warn_at_pct: 80
   gemini:
