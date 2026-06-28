@@ -29,7 +29,7 @@ llm:
   # Switch to it with:  providers.llm: openai_compat
   # Set OPENAI_COMPAT_API_KEY in .env
   openai_compat:
-    base_url: https://agentrouter.org/v1
+    base_url: https://agentrouter.org
     model: claude-opus-4-8
 
 stt:
