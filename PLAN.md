@@ -9,8 +9,9 @@
 
 - **Phase 0 (scaffold):** done. `python -m friday.main` boots, loads
   config (`.env` + `config.yaml` via pydantic), logs readiness, exits clean.
-- **Phase 1 (MVP loop):** partial. Only the TTS provider is implemented
-  (`friday/tts/kokoro.py`). Everything else listed below is still to build.
+- **Phase 1 (MVP loop):** chunks 1 (audio I/O) and 2 (Groq Whisper STT)
+  are done. The TTS provider (`friday/tts/kokoro.py`) is also done.
+  Remaining: skills registry, safety layer, LLM provider, agent loop.
 
 ---
 
@@ -82,8 +83,17 @@ for user testing before moving on.
    `demo.py` (`python -m friday.audio.demo` — end-to-end I/O smoke test
    that records, then plays a Kokoro-synthesised duration line back).
    Extras: `audio = ["sounddevice>=0.4", "pynput>=1.7", "numpy>=1.26"]`.
-2. **`friday/stt/groq_whisper.py`** — Groq Whisper impl behind the
-   existing `STTProvider` interface.
+2. **`friday/stt/groq_whisper.py`** — **DONE.** `GroqWhisperSTT`
+   against the existing `STTProvider` interface, driven by the
+   OpenAI-SDK with `base_url = https://api.groq.com/openai/v1`. Wraps
+   the caller's 16-bit PCM bytes in an in-memory WAV (stdlib `wave`,
+   no disk I/O), POSTs to `audio.transcriptions`, returns a
+   `Transcript` with `duration_s` and `latency_ms` populated. Bounded
+   `retry-after` honoring on 429s; full RPM/TPM budgets land with
+   chunk 5. New helper `friday/audio/encoding.py` converts the
+   `MicRecorder` float32 buffer to PCM16 bytes for the wire. End-to-end
+   demo at `python -m friday.stt.demo` — record, transcribe, echo via
+   Kokoro. Extras: `stt-groq = ["openai>=1.40"]`.
 3. **`friday/skills/registry.py` + `builtin.py`** — `@skill` decorator
    with auto JSON-schema generation from signature + docstring. Five
    starter skills: `open_app`, `web_search` (browser results),
@@ -157,12 +167,14 @@ friday/
   utils/logging.py     # DONE   — structured logger + audit helper
   utils/tokens.py      # TODO   — usage tracking + 429 backoff (lands with chunk 5)
   stt/base.py          # DONE   — interface only
-  stt/groq_whisper.py  # TODO   — chunk 2
+  stt/groq_whisper.py  # DONE   — chunk 2 (Groq Whisper via openai SDK)
+  stt/demo.py          # DONE   — mic → Groq Whisper → Kokoro echo demo
   llm/base.py          # DONE   — interface only
   llm/groq_provider.py # TODO   — chunk 5
   tts/base.py          # DONE
   tts/kokoro.py        # DONE   — default local TTS
   audio/               # DONE   — chunk 1 (capture + playback + hotkey + demo)
+  audio/encoding.py    # DONE   — float32 → PCM16 helper for STT (lands with chunk 2)
   skills/              # TODO   — chunk 3
   agent/safety.py      # TODO   — chunk 4
   agent/loop.py        # TODO   — chunk 6

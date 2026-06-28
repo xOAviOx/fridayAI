@@ -128,6 +128,35 @@ Linux/macOS users: install PortAudio first (`brew install portaudio`
 or `apt install libportaudio2`). The Windows `sounddevice` wheel
 bundles it.
 
+## Try the STT loop (voice in, your own words out)
+
+Chunk 2 wires Groq Whisper in behind the same hotkey. Hold
+`ctrl+space`, say something, release — FRIDAY transcribes your speech
+on Groq and speaks the transcript back through Kokoro.
+
+```bash
+# Adds the openai SDK on top of the audio + tts-kokoro extras
+uv sync --extra audio --extra tts-kokoro --extra stt-groq
+# or:
+pip install -e ".[audio,tts-kokoro,stt-groq]"
+
+# Make sure GROQ_API_KEY is set in .env
+python -m friday.stt.demo
+```
+
+Expected log lines per utterance:
+
+```
+listening… (release ctrl+space to stop)
+captured 2.40s of audio
+transcribing 76800 bytes via Groq Whisper…
+you said: 'Hello FRIDAY, can you hear me?'  (2.40s audio, 412 ms RTT)
+```
+
+If the transcript looks right and the echo plays back, the full
+mic → STT → TTS spine is healthy. The LLM brain plugs in next (chunk 5)
+and replaces the echo with an actual response.
+
 ## Layout
 
 ```
@@ -135,13 +164,16 @@ friday/
   main.py            # entry point (Phase 0: boot + log + exit)
   config.py          # .env + config.yaml loader, validated with pydantic
   utils/logging.py   # structured logging setup + audit logger
-  stt/base.py        # STTProvider interface (Phase 1: groq_whisper.py)
+  stt/base.py        # STTProvider interface
+  stt/groq_whisper.py # Groq Whisper STT (default — OpenAI-SDK compatible)
+  stt/demo.py        # `python -m friday.stt.demo` — mic → Groq Whisper → Kokoro echo
   llm/base.py        # LLMProvider interface (Phase 1: groq_provider.py)
   tts/base.py        # TTSProvider interface
   tts/kokoro.py      # local CPU TTS (default — no API key, no cost)
   audio/capture.py   # mic recorder driven by PTT start/stop
   audio/playback.py  # AudioChunk iterator → speakers (with stop()/barge-in)
   audio/hotkey.py    # global PTT + panic hotkeys via pynput
+  audio/encoding.py  # float32 → 16-bit PCM bytes helper for STT
   audio/demo.py      # `python -m friday.audio.demo` — end-to-end I/O smoke test
   audio/             # mic capture + playback (Phase 1)
   skills/            # @skill registry + builtins (Phase 1)
