@@ -9,9 +9,10 @@
 
 - **Phase 0 (scaffold):** done. `python -m friday.main` boots, loads
   config (`.env` + `config.yaml` via pydantic), logs readiness, exits clean.
-- **Phase 1 (MVP loop):** chunks 1 (audio I/O) and 2 (Groq Whisper STT)
-  are done. The TTS provider (`friday/tts/kokoro.py`) is also done.
-  Remaining: skills registry, safety layer, LLM provider, agent loop.
+- **Phase 1 (MVP loop):** chunks 1 (audio I/O), 2 (Groq Whisper STT),
+  and 3 (skills registry + 5 starter skills) are done. The TTS provider
+  (`friday/tts/kokoro.py`) is also done. Remaining: safety layer, LLM
+  provider, agent loop.
 
 ---
 
@@ -94,12 +95,18 @@ for user testing before moving on.
    `MicRecorder` float32 buffer to PCM16 bytes for the wire. End-to-end
    demo at `python -m friday.stt.demo` — record, transcribe, echo via
    Kokoro. Extras: `stt-groq = ["openai>=1.40"]`.
-3. **`friday/skills/registry.py` + `builtin.py`** — `@skill` decorator
-   with auto JSON-schema generation from signature + docstring. Five
-   starter skills: `open_app`, `web_search` (browser results),
-   `media_control` (play/pause/next/volume), `system_info`
-   (battery/time/cpu), `type_text`. Write schema-generation tests
-   alongside — the spec calls these out by name.
+3. **`friday/skills/registry.py` + `builtin.py`** — **DONE.** `@skill`
+   decorator + `SkillRegistry` with auto JSON-schema generation from
+   signature + docstring. Supports primitives, `Literal[...]` enums,
+   `list[T]`, `T | None`, and NumPy-style docstring parameter blocks.
+   Five starter skills register on package import: `open_app`,
+   `web_search`, `media_control`, `system_info`, `type_text`.
+   `type_text` is flagged `destructive=True` for chunk 4 to enforce.
+   Schema-generation tests live in `tests/test_skill_schema.py` (the
+   spec calls these out by name); registry behavior + builtin metadata
+   tests in `tests/test_skill_registry.py`. All 35 tests pass.
+   Extras: `skills = ["pyautogui>=0.9", "psutil>=5.9"]` — lazy-imported
+   inside skill bodies so the registry stays import-clean.
 4. **`friday/agent/safety.py`** — dry-run gate, shell + app allowlists,
    `destructive: bool` flag enforcement, audit log to
    `friday_audit.log`. Built **before** the loop so safety wires in from
@@ -175,7 +182,8 @@ friday/
   tts/kokoro.py        # DONE   — default local TTS
   audio/               # DONE   — chunk 1 (capture + playback + hotkey + demo)
   audio/encoding.py    # DONE   — float32 → PCM16 helper for STT (lands with chunk 2)
-  skills/              # TODO   — chunk 3
+  skills/registry.py   # DONE   — chunk 3 (@skill + SkillRegistry + JSON-schema gen)
+  skills/builtin.py    # DONE   — chunk 3 (5 starter skills)
   agent/safety.py      # TODO   — chunk 4
   agent/loop.py        # TODO   — chunk 6
   agent/router.py      # TODO   — chunk 6

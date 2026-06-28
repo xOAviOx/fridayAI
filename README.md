@@ -157,6 +157,49 @@ If the transcript looks right and the echo plays back, the full
 mic → STT → TTS spine is healthy. The LLM brain plugs in next (chunk 5)
 and replaces the echo with an actual response.
 
+## Skills (the tools the LLM can call)
+
+`friday/skills/registry.py` defines a `@skill` decorator that turns any
+typed Python function into an LLM-callable tool. Schemas are derived
+from the signature + docstring — there are zero hand-written JSON
+schemas in this codebase.
+
+```python
+from friday.skills import skill
+
+@skill
+def open_app(name: str) -> str:
+    """Open the named application on the user's machine.
+
+    Parameters
+    ----------
+    name:
+        Application name like "spotify" or "chrome".
+    """
+    ...
+```
+
+Five starter skills ship in `friday/skills/builtin.py`: `open_app`,
+`web_search`, `media_control`, `system_info`, `type_text`. They're
+auto-registered in `default_registry` when the package is imported.
+
+`type_text` is the only one marked `destructive=True` — the safety
+layer (chunk 4) will use that flag to require explicit confirmation
+before it runs.
+
+```bash
+# Install the runtime deps only if you actually want to execute skills:
+uv sync --extra skills    # adds pyautogui + psutil
+# or:
+pip install -e ".[skills]"
+```
+
+The schema generator is covered by `tests/test_skill_schema.py`:
+
+```bash
+python -m pytest tests/ -v
+```
+
 ## Layout
 
 ```
@@ -176,7 +219,8 @@ friday/
   audio/encoding.py  # float32 → 16-bit PCM bytes helper for STT
   audio/demo.py      # `python -m friday.audio.demo` — end-to-end I/O smoke test
   audio/             # mic capture + playback (Phase 1)
-  skills/            # @skill registry + builtins (Phase 1)
+  skills/registry.py # @skill decorator + SkillRegistry + JSON-schema generator
+  skills/builtin.py  # the five starter skills (open_app, web_search, …)
   agent/             # loop, router, executor, safety (Phase 1+)
   codeexec/          # sandboxed code execution (Phase 3)
   computeruse/       # screenshot + pyautogui driver (Phase 4)
