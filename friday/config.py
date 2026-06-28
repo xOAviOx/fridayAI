@@ -178,6 +178,23 @@ class RateLimitConfig(_StrictModel):
         return v
 
 
+class MonitorConfig(_StrictModel):
+    """Proactive system-monitor thresholds and timing."""
+    enabled: bool = True
+    # Battery
+    battery_low_pct: int = 15      # alert when unplugged battery drops below this
+    # CPU
+    cpu_alert_pct: int = 85        # CPU % that counts as "high"
+    cpu_sustained_s: int = 30      # must be high for this many seconds before alert
+    # RAM
+    ram_alert_pct: int = 90        # alert when RAM usage exceeds this %
+    # Disk
+    disk_alert_pct: int = 95       # alert when disk usage exceeds this %
+    # Timing
+    check_interval_s: int = 10     # how often the monitor wakes up (seconds)
+    alert_cooldown_s: int = 300    # same alert won't fire again within this window
+
+
 class LoggingConfig(_StrictModel):
     level: str = "INFO"
     audit_path: str | None = "friday_audit.log"
@@ -209,6 +226,7 @@ class Config(_StrictModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     hotkeys: HotkeysConfig = Field(default_factory=HotkeysConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     rate_limits: dict[str, RateLimitConfig] = Field(default_factory=dict)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 

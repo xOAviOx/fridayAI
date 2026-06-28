@@ -104,6 +104,19 @@ rate_limits:
     tokens_per_min: 1000000
     warn_at_pct: 80
 
+# -------------------------------------------------------------------------
+# Proactive monitor — FRIDAY speaks up without being asked
+# -------------------------------------------------------------------------
+monitor:
+  enabled: true
+  battery_low_pct: 15       # alert when unplugged battery drops below this
+  cpu_alert_pct: 85         # CPU % that counts as "high"
+  cpu_sustained_s: 30       # must stay high this many seconds before alert
+  ram_alert_pct: 90         # alert when RAM usage exceeds this %
+  disk_alert_pct: 95        # alert when disk usage exceeds this %
+  check_interval_s: 10      # how often the monitor wakes up
+  alert_cooldown_s: 300     # same alert won't fire again within 5 minutes
+
 logging:
   level: INFO
   # Every executed action is appended here with a timestamp.

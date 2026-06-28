@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Iterator
 
 from friday.agent.executor import Executor
+from friday.agent.monitor import ProactiveMonitor
 from friday.agent.router import Router
 from friday.agent.safety import SafetyGate
 from friday.audio.capture import MicRecorder
@@ -292,6 +293,9 @@ class AgentLoop:
             on_panic=self._on_panic,
         )
 
+        # ----- proactive monitor (Phase 4) ------------------------------
+        self._monitor = ProactiveMonitor(self._speak_sync, config.monitor)
+
         # ----- Phase 2: turn threading ----------------------------------
         # The listener thread only sets flags / queues audio; the heavy
         # work (STT → LLM → TTS) runs on a daemon turn thread so the
@@ -310,12 +314,14 @@ class AgentLoop:
         timers_module.set_speak_callback(self._speak_sync)
 
         self._hotkeys.start()
+        self._monitor.start()
         log.info(
-            "agent ready (phase 3). hold %s to talk, %s to quit. "
-            "barge-in supported. "
+            "agent ready (phase 4). hold %s to talk, %s to quit. "
+            "barge-in supported. proactive monitor %s. "
             "(brain=%s, ears=%s, mouth=%s, dry_run=%s, streaming=True)",
             self._cfg.hotkeys.push_to_talk,
             self._cfg.hotkeys.panic,
+            "ON" if self._cfg.monitor.enabled else "OFF",
             self._cfg.providers.llm,
             self._cfg.providers.stt,
             self._cfg.providers.tts,
@@ -344,6 +350,7 @@ class AgentLoop:
 
     def _teardown(self) -> None:
         self._hotkeys.stop()
+        self._monitor.stop()
         # Cancel any running turn so it exits cleanly.
         self._turn_cancel.set()
         self._speaker.stop()
