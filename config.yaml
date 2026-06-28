@@ -54,8 +54,19 @@ tts:
 audio:
   sample_rate: 16000
   channels: 1
-  # Phase 2+: set true once the VAD implementation lands (next chunk).
+  # Phase 2+: legacy PTT VAD flag (kept for compatibility, not used in Phase 7+).
   vad_enabled: false
+
+  # Phase 7: always-on wake word + automatic end-of-speech detection.
+  # Set enabled: true to switch from push-to-talk to hands-free mode.
+  # PTT (ctrl+space) still works as a fallback even in wake-word mode.
+  wake_word:
+    enabled: false          # flip to true to activate
+    model: hey_jarvis       # built-in: hey_jarvis | alexa | hey_mycroft | hey_rhasspy
+    sensitivity: 0.5        # 0.0–1.0 — lower = more triggers, higher = fewer
+    vad_aggressiveness: 2   # 0–3 — higher ends recording sooner in noisy rooms
+    silence_ms: 900         # ms of consecutive silence that ends an utterance
+    max_record_s: 15.0      # hard cap on utterance length
 
 hotkeys:
   push_to_talk: ctrl+space

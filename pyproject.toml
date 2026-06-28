@@ -53,6 +53,16 @@ llm-groq = [
     "openai>=1.40",
 ]
 
+# Phase 7: wake word detection + VAD-based end-of-speech.
+# openwakeword bundles pretrained ONNX models (hey_jarvis, alexa, etc.).
+# webrtcvad handles 30ms silence detection frames.
+# onnxruntime is the inference engine openwakeword uses on CPU.
+wake-word = [
+    "openwakeword>=0.6",
+    "webrtcvad>=2.0",
+    "onnxruntime>=1.17",
+]
+
 # Spotify Web API — needed for spotify_play_song and spotify_now_playing
 # (on non-macOS). spotify_search works without this.
 spotify = [

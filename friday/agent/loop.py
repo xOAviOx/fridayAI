@@ -58,6 +58,7 @@ from friday.agent.safety import SafetyGate
 from friday.audio.capture import MicRecorder
 from friday.audio.encoding import float32_to_pcm16_bytes
 from friday.audio.hotkey import HotkeyController
+from friday.audio.wakeword import WakeWordListener
 from friday.audio.playback import Speaker
 from friday.config import Config, ConfigError, load_config
 from friday.llm.base import ChatMessage
@@ -391,10 +392,27 @@ class AgentLoop:
             )
 
         # ----- audio I/O ------------------------------------------------
-        self._recorder = MicRecorder(
-            sample_rate=config.audio.sample_rate,
-            channels=config.audio.channels,
-        )
+        # MicRecorder is only used in legacy PTT mode.  In wake-word mode
+        # WakeWordListener owns the mic exclusively (no two streams needed).
+        ww_cfg = config.audio.wake_word
+        if ww_cfg.enabled:
+            self._recorder = None
+            self._wake_listener: WakeWordListener | None = WakeWordListener(
+                on_wake=self._on_wake_word,
+                model_name=ww_cfg.model,
+                sensitivity=ww_cfg.sensitivity,
+                vad_aggressiveness=ww_cfg.vad_aggressiveness,
+                silence_ms=ww_cfg.silence_ms,
+                max_record_s=ww_cfg.max_record_s,
+                sample_rate=config.audio.sample_rate,
+            )
+        else:
+            self._recorder = MicRecorder(
+                sample_rate=config.audio.sample_rate,
+                channels=config.audio.channels,
+            )
+            self._wake_listener = None
+
         self._speaker = Speaker()
 
         # ----- agent layers ---------------------------------------------
@@ -408,6 +426,8 @@ class AgentLoop:
         self._current_user_text = ""   # set per-turn for tool selection
 
         # ----- hotkeys --------------------------------------------------
+        # HotkeyController always runs: panic key works in both modes,
+        # and PTT falls back to wake-listener.ptt_start/stop in wake mode.
         self._hotkeys = HotkeyController(
             ptt=config.hotkeys.push_to_talk,
             panic=config.hotkeys.panic,
@@ -438,13 +458,22 @@ class AgentLoop:
 
         self._hotkeys.start()
         self._monitor.start()
+        if self._wake_listener is not None:
+            self._wake_listener.start()
+
+        ww_cfg = self._cfg.audio.wake_word
+        if ww_cfg.enabled:
+            input_mode = f"say '{ww_cfg.model}' or hold {self._cfg.hotkeys.push_to_talk}"
+        else:
+            input_mode = f"hold {self._cfg.hotkeys.push_to_talk} to talk"
         log.info(
-            "agent ready (phase 4). hold %s to talk, %s to quit. "
-            "barge-in supported. proactive monitor %s. "
+            "agent ready (phase 7). %s, %s to quit. "
+            "barge-in supported. proactive monitor %s. wake-word %s. "
             "(brain=%s, ears=%s, mouth=%s, dry_run=%s, streaming=True)",
-            self._cfg.hotkeys.push_to_talk,
+            input_mode,
             self._cfg.hotkeys.panic,
             "ON" if self._cfg.monitor.enabled else "OFF",
+            "ON" if ww_cfg.enabled else "OFF",
             self._cfg.providers.llm,
             self._cfg.providers.stt,
             self._cfg.providers.tts,
@@ -474,12 +503,15 @@ class AgentLoop:
     def _teardown(self) -> None:
         self._hotkeys.stop()
         self._monitor.stop()
+        if self._wake_listener is not None:
+            self._wake_listener.stop()
         # Cancel any running turn so it exits cleanly.
         self._turn_cancel.set()
         self._speaker.stop()
         if self._turn_thread and self._turn_thread.is_alive():
             self._turn_thread.join(timeout=3.0)
-        self._recorder.stop()
+        if self._recorder is not None:
+            self._recorder.stop()
         self._tts.close()
         self._stt.close()
         self._llm.close()
@@ -488,24 +520,45 @@ class AgentLoop:
 
     def _on_ptt_press(self) -> None:
         log.info("listening… (release %s to stop)", self._cfg.hotkeys.push_to_talk)
-        # Barge-in: if a turn is in flight, cancel it and cut audio NOW.
+        # Barge-in: cancel any running turn and cut audio NOW.
         self._turn_cancel.set()
         self._speaker.stop()
-        self._recorder.start()
+        if self._wake_listener is not None:
+            # Wake-word mode: tell the listener to enter PTT recording.
+            self._wake_listener.ptt_start()
+        else:
+            # Legacy PTT mode: use MicRecorder directly.
+            self._recorder.start()
 
     def _on_ptt_release(self) -> None:
-        audio = self._recorder.stop()
-        seconds = len(audio) / self._recorder.sample_rate if len(audio) else 0.0
-        if seconds < _MIN_AUDIO_S:
-            log.info("captured %.2fs — too short, ignoring", seconds)
-            return
-        log.info("captured %.2fs of audio", seconds)
+        if self._wake_listener is not None:
+            # Wake-word mode: signal end of PTT; audio is delivered via
+            # _on_wake_word callback once WakeWordListener finishes the read.
+            self._wake_listener.ptt_stop()
+        else:
+            # Legacy PTT mode: collect audio from MicRecorder.
+            audio = self._recorder.stop()
+            seconds = len(audio) / self._recorder.sample_rate if len(audio) else 0.0
+            if seconds < _MIN_AUDIO_S:
+                log.info("captured %.2fs — too short, ignoring", seconds)
+                return
+            log.info("captured %.2fs of audio", seconds)
+            with self._pending_lock:
+                self._pending_audio = audio
+            self._maybe_spawn_turn()
 
-        # Store audio for the turn worker.  If the previous turn is
-        # still finishing its teardown, the worker will pick this up.
+    def _on_wake_word(self, audio: "Any") -> None:
+        """Called by WakeWordListener (its thread) when an utterance is ready."""
+        seconds = len(audio) / self._cfg.audio.sample_rate if len(audio) else 0.0
+        if seconds < _MIN_AUDIO_S:
+            log.info("wake utterance %.2fs — too short, ignoring", seconds)
+            return
+        log.info("captured %.2fs of audio (wake word / PTT)", seconds)
+        # Barge-in support: cancel any in-flight turn.
+        self._turn_cancel.set()
+        self._speaker.stop()
         with self._pending_lock:
             self._pending_audio = audio
-
         self._maybe_spawn_turn()
 
     def _on_panic(self) -> None:

@@ -129,14 +129,55 @@ class ProviderSelection(_StrictModel):
     tts: TTSName = "kokoro"
 
 
+class WakeWordConfig(_StrictModel):
+    """Phase 7: always-on wake word + VAD settings."""
+
+    # Set to true to replace push-to-talk with always-on "hey friday".
+    enabled: bool = False
+
+    # openwakeword model to load.  Built-in ONNX choices:
+    #   hey_jarvis (default — closest to "hey friday" phonetically)
+    #   alexa, hey_mycroft, hey_rhasspy
+    # Point to a custom .onnx path for a trained "hey_friday" model.
+    model: str = "hey_jarvis"
+
+    # Detection threshold 0–1.  0.5 is a good starting point.
+    # Lower → more sensitive (more false positives).
+    # Higher → less sensitive (may miss the phrase).
+    sensitivity: float = 0.5
+
+    # webrtcvad aggressiveness 0–3.
+    # Higher = ends recording sooner in noisy environments.
+    vad_aggressiveness: int = 2
+
+    # Consecutive milliseconds of silence that end an utterance.
+    silence_ms: int = 900
+
+    # Hard cap on utterance length (seconds).
+    max_record_s: float = 15.0
+
+    @field_validator("sensitivity")
+    @classmethod
+    def _sensitivity_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("audio.wake_word.sensitivity must be in [0, 1]")
+        return v
+
+    @field_validator("vad_aggressiveness")
+    @classmethod
+    def _vad_range(cls, v: int) -> int:
+        if v not in (0, 1, 2, 3):
+            raise ValueError("audio.wake_word.vad_aggressiveness must be 0–3")
+        return v
+
+
 class AudioConfig(_StrictModel):
     sample_rate: int = 16000
     channels: int = 1
-    # Phase 2+: voice-activity detection. When True, recording stops
-    # automatically after silence rather than requiring PTT release.
-    # The VAD implementation is plumbed in config here; the wiring to a
-    # VAD library lands in a subsequent Phase 2 chunk.
+    # Phase 2+: legacy PTT VAD flag (kept for config compatibility).
     vad_enabled: bool = False
+    # Phase 7: always-on wake word + automatic VAD.
+    wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
 
     @field_validator("sample_rate")
     @classmethod
