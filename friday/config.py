@@ -64,14 +64,14 @@ class AnthropicLLMConfig(_StrictModel):
 
 
 class OpenAICompatConfig(_StrictModel):
-    """Any OpenAI-compatible endpoint (agentrouter.org, LM Studio, vLLM, etc.).
+    """Any OpenAI-compatible endpoint — LM Studio, vLLM, Ollama, OpenAI, etc.
 
     Set OPENAI_COMPAT_API_KEY in .env, then switch providers.llm to
     openai_compat and fill in base_url + model below.
     """
 
-    base_url: str = "https://agentrouter.org/v1"
-    model: str = "claude-opus-4-8"
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o"
 
 
 class LLMSection(_StrictModel):

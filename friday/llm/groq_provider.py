@@ -208,8 +208,7 @@ class GroqLLM(LLMProvider):
         Budget accounting fires the ``before_request`` estimate before
         the HTTP call and records actual usage after the stream closes.
         """
-        # no_stream mode: provider doesn't support SSE streaming (e.g.
-        # agentrouter returns text/html with Content-Length). Use the
+        # no_stream mode: provider doesn't support SSE streaming. Use the
         # regular chat() call and wrap in a fake streamed-response.
         if self._no_stream:
             response = self.chat(
@@ -326,16 +325,16 @@ def _to_openai_message(m: ChatMessage) -> dict[str, Any]:
 def _from_openai_response(response: Any) -> ChatResponse:
     """Translate the OpenAI ``ChatCompletion`` object back to ``ChatResponse``.
 
-    Some OpenAI-compatible proxies (e.g. agentrouter) respond with
-    ``Content-Type: text/html`` even for valid JSON bodies.  The OpenAI SDK
-    then returns the raw body as a plain ``str`` instead of a structured
-    object.  We detect that and parse the JSON ourselves.
+    Some OpenAI-compatible proxies respond with ``Content-Type: text/html``
+    even for valid JSON bodies.  The OpenAI SDK then returns the raw body
+    as a plain ``str`` instead of a structured object.
+    We detect that and parse the JSON ourselves.
     """
     if isinstance(response, str):
         stripped = response.strip()
         log.debug("raw LLM string response (%d chars): %s", len(stripped), stripped[:500])
-        # HTML error page — agentrouter sometimes returns one when the
-        # request is malformed or the upstream is overloaded.
+        # HTML error page — some proxies return one when the request is
+        # malformed or the upstream is overloaded.
         if stripped.startswith("<"):
             # Extract a short human-readable snippet for the log.
             import re as _re
@@ -343,7 +342,7 @@ def _from_openai_response(response: Any) -> ChatResponse:
             text_only = " ".join(text_only.split())[:300]
             log.warning("LLM returned HTML instead of JSON: %s", text_only)
             raise RuntimeError(
-                f"LLM returned an HTML error page (agentrouter upstream error). "
+                f"LLM returned an HTML error page (upstream error). "
                 f"Content preview: {text_only[:120]}"
             )
         try:
@@ -554,8 +553,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
 class _SyncStreamedResponse:
     """Wraps a non-streaming ChatResponse as a StreamedResponse-compatible object.
 
-    Used when the provider doesn't support SSE (e.g. agentrouter returns
-    text/html instead of text/event-stream). The agent loop calls it the
+    Used when the provider doesn't support SSE streaming. The agent loop calls it the
     same way as StreamedResponse — iterate for text deltas, read .response
     for the assembled ChatResponse.
     """

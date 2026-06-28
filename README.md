@@ -1,345 +1,166 @@
 # FRIDAY
 
-Voice-controlled PC assistant. Push a hotkey, talk, it actually does the thing.
+A voice-controlled AI assistant for your Mac. Hold a hotkey, say what you want, it does it — files, apps, search, Spotify, whatever.
 
-> **Status:** Phase 0 scaffold. Boots, loads config, prints "ready", exits.
-> The voice loop lands in Phase 1.
+```
+Hold ctrl+space → talk → release → done
+```
 
-## Architecture (one-paragraph version)
+## What it can do
 
-Every request is routed through three layers, fastest/safest first:
+| Category | Skills |
+|---|---|
+| **Files** | Create, read, overwrite, delete files and folders |
+| **Apps** | Open and close any app by name |
+| **Web** | Google search (opens in browser), YouTube search |
+| **Spotify** | Search, play a song, see what's playing |
+| **System** | Volume control, clipboard read/write, screenshot, list running apps |
+| **Keyboard** | Type any text into whatever app is focused |
+| **Info** | CPU, RAM, disk, battery, IP address |
+| **Media** | Play, pause, next, previous track |
 
-1. **Skill registry** — hand-written Python functions for the common stuff
-   (open app, search, media, type, system info). ~80% of requests land here.
-2. **Code execution (sandboxed)** — the LLM writes and runs Python/bash for
-   open-ended tasks. Gated behind confirmation. Off by default.
-3. **Computer use (vision + mouse/keyboard)** — last-resort fallback for GUI
-   tasks with no API. Off by default.
+## Stack
 
-The whole thing is one Python daemon for now. A HUD comes much later (Phase 6).
+- **STT** — Groq Whisper (fast, accurate, free tier)
+- **LLM** — Groq llama-3.1-8b-instant (30k TPM free tier)
+- **TTS** — Kokoro (local, offline, no API key, ~1s/sentence on a laptop)
 
-## Requirements
-
-- Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/) recommended (falls back to `venv` + `pip`)
-- Windows / macOS / Linux
+All three run on the free tier. First run downloads ~330 MB of Kokoro weights.
 
 ## Setup
 
+**1. Clone and install**
+
 ```bash
-# 1. Get a venv with the base deps (config + logging only)
-uv sync                       # preferred
-# or:
-python -m venv .venv && .venv\Scripts\activate && pip install -e .
-
-# 2. (Optional) Add the local TTS extras for the default $0 voice path
-uv sync --extra tts-kokoro    # preferred
-# or:
-pip install -e ".[tts-kokoro]"
-# First synthesis will download ~330 MB of Kokoro weights into the
-# HuggingFace cache. Subsequent runs are offline.
-
-# 3. Configure secrets
-cp .env.example .env
-# Out of the box you only need GROQ_API_KEY — the default stack is
-# Groq (STT + LLM) + Kokoro (local TTS), and Kokoro needs no key.
-# Missing keys for the *selected* providers fail loudly at boot.
+git clone https://github.com/xOAviOx/fridayAI
+cd fridayAI
+uv sync --extra audio --extra tts-kokoro --extra stt-groq --extra llm-groq --extra skills
 ```
 
-The default config is `providers.tts: kokoro` (local, free). To switch to
-cloud streaming TTS, set `providers.tts: elevenlabs` in `config.yaml` and
-put `ELEVENLABS_API_KEY` in `.env`.
+No `uv`? `pip install -e ".[audio,tts-kokoro,stt-groq,llm-groq,skills]"` works too.
+
+**2. Add your API key**
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set:
+
+```
+GROQ_API_KEY=your_key_here
+```
+
+Get a free key at [console.groq.com](https://console.groq.com). That's the only key you need for the default setup.
+
+**3. macOS permissions**
+
+FRIDAY needs mic access and accessibility permissions for global hotkeys. macOS will prompt you the first time. If the hotkey doesn't work, go to **System Settings → Privacy & Security → Accessibility** and add Terminal (or your terminal app).
 
 ## Run
 
 ```bash
-python -m friday.main
+uv run python -m friday.agent.loop
 ```
 
-You should see something like:
+Hold `ctrl+space` to talk, release to send. Press `ctrl+shift+esc` to quit. Press `ctrl+space` during a response to interrupt (barge-in).
 
-```
-12:34:56 | INFO    | friday | FRIDAY ready.
-12:34:56 | INFO    | friday |   brain (LLM): groq
-12:34:56 | INFO    | friday |   ears (STT):  groq
-12:34:56 | INFO    | friday |   mouth (TTS): elevenlabs
-12:34:56 | INFO    | friday |   dry-run:     True
-12:34:56 | INFO    | friday |   code-exec:   False
-12:34:56 | INFO    | friday |   computer-use:False
-12:34:56 | INFO    | friday | Phase 0 scaffold: no event loop yet — exiting cleanly.
-```
+## Example commands
 
-Process exits with code 0. Config errors exit with code 2 and a clear message.
+- *"Create a file on my desktop called server.js and write a basic Express app in it"*
+- *"Open Spotify and play Blinding Lights"*
+- *"Search YouTube for lo-fi beats"*
+- *"Google the weather in Mumbai"*
+- *"Take a screenshot"*
+- *"What's my IP address?"*
+- *"Set volume to 50"*
+- *"Open Chrome"*
+- *"What's currently playing on Spotify?"*
+- *"Close Spotify"*
+- *"Copy this to clipboard: hello world"*
 
-## Smoke-test the TTS
+## Config
 
-Phase 0 doesn't wire TTS into the runtime loop yet, but you can drive the
-provider directly to confirm Kokoro is working end-to-end. After
-`uv sync --extra tts-kokoro`, drop this in `scratch_tts.py` and run it:
-
-```python
-import wave
-from friday.config import load_config
-from friday.tts import KokoroTTS
-
-cfg = load_config().tts.kokoro
-tts = KokoroTTS(voice=cfg.voice, lang_code=cfg.lang_code, speed=cfg.speed)
-
-chunks = list(tts.synthesize("FRIDAY here. Local voice, zero dollars."))
-print(f"got {len(chunks)} chunk(s), sr={chunks[0].sample_rate}")
-
-with wave.open("out.wav", "wb") as w:
-    w.setnchannels(1)
-    w.setsampwidth(2)               # 16-bit PCM
-    w.setframerate(chunks[0].sample_rate)
-    for c in chunks:
-        w.writeframes(c.pcm)
-print("wrote out.wav")
-```
-
-```bash
-python scratch_tts.py
-# → got N chunk(s), sr=24000
-# → wrote out.wav
-```
-
-Open `out.wav` in any audio player; if you hear the line, the provider,
-config, and PCM conversion are all healthy.
-
-## Try the audio I/O loop
-
-Once you've also installed the audio extras you can drive the full
-hotkey + mic + Kokoro + speakers chain end-to-end, no STT or LLM yet:
-
-```bash
-# Adds sounddevice + pynput + numpy
-uv sync --extra audio --extra tts-kokoro
-
-python -m friday.audio.demo
-```
-
-Hold `ctrl+space` and say anything; release to stop. FRIDAY will
-synthesise "Got it. I captured N seconds of audio." through Kokoro
-and play it back through your default output device. Press
-`ctrl+shift+esc` to quit — pressing it during playback cuts the
-audio immediately, which is the panic-key behaviour Phase 1 needs.
-
-Linux/macOS users: install PortAudio first (`brew install portaudio`
-or `apt install libportaudio2`). The Windows `sounddevice` wheel
-bundles it.
-
-## Try the STT loop (voice in, your own words out)
-
-Chunk 2 wires Groq Whisper in behind the same hotkey. Hold
-`ctrl+space`, say something, release — FRIDAY transcribes your speech
-on Groq and speaks the transcript back through Kokoro.
-
-```bash
-# Adds the openai SDK on top of the audio + tts-kokoro extras
-uv sync --extra audio --extra tts-kokoro --extra stt-groq
-# or:
-pip install -e ".[audio,tts-kokoro,stt-groq]"
-
-# Make sure GROQ_API_KEY is set in .env
-python -m friday.stt.demo
-```
-
-Expected log lines per utterance:
-
-```
-listening… (release ctrl+space to stop)
-captured 2.40s of audio
-transcribing 76800 bytes via Groq Whisper…
-you said: 'Hello FRIDAY, can you hear me?'  (2.40s audio, 412 ms RTT)
-```
-
-If the transcript looks right and the echo plays back, the full
-mic → STT → TTS spine is healthy. The LLM brain plugs in next (chunk 5)
-and replaces the echo with an actual response.
-
-## Skills (the tools the LLM can call)
-
-`friday/skills/registry.py` defines a `@skill` decorator that turns any
-typed Python function into an LLM-callable tool. Schemas are derived
-from the signature + docstring — there are zero hand-written JSON
-schemas in this codebase.
-
-```python
-from friday.skills import skill
-
-@skill
-def open_app(name: str) -> str:
-    """Open the named application on the user's machine.
-
-    Parameters
-    ----------
-    name:
-        Application name like "spotify" or "chrome".
-    """
-    ...
-```
-
-Five starter skills ship in `friday/skills/builtin.py`: `open_app`,
-`web_search`, `media_control`, `system_info`, `type_text`. They're
-auto-registered in `default_registry` when the package is imported.
-
-`type_text` is the only one marked `destructive=True` — the safety
-layer (chunk 4) will use that flag to require explicit confirmation
-before it runs.
-
-```bash
-# Install the runtime deps only if you actually want to execute skills:
-uv sync --extra skills    # adds pyautogui + psutil
-# or:
-pip install -e ".[skills]"
-```
-
-The schema generator is covered by `tests/test_skill_schema.py`:
-
-```bash
-python -m pytest tests/ -v
-```
-
-## Safety gate
-
-Every tool call FRIDAY proposes routes through `friday/agent/safety.py`
-before anything actually runs. `SafetyGate.evaluate(skill_name, args)`
-returns one of four decisions:
-
-- `allow` — execute the skill.
-- `dry_run` — `safety.dry_run` is on; log the intent, do nothing.
-- `needs_confirmation` — destructive skill outside dry-run, or an
-  off-allowlist `open_app`/shell command. The executor (chunk 6) is
-  responsible for prompting the user.
-- `deny` — unknown skill, empty shell command, or open_app with no
-  name. Hard refuse.
-
-Every decision is appended as one JSON line to `friday_audit.log`:
-
-```json
-{"ts": "2026-06-28T06:07:16+00:00", "event": "skill_invoke", "skill": "open_app",
- "arguments": {"name": "notion"}, "decision": "needs_confirmation",
- "reason": "app 'notion' is not in app_allowlist",
- "app": "notion", "allowlist": ["chrome", "code", "firefox", "notepad", "spotify"]}
-```
-
-`destructive=True` is the marker the gate reads off each skill — only
-`type_text` carries it among the five builtins. Off-allowlist apps
-get the same `needs_confirmation` treatment.
-
-Defaults in `config.yaml` are paranoid: `dry_run: true`,
-`enable_code_exec: false`, `enable_computer_use: false`. Keep them on
-throughout Phase 1.
-
-## LLM brain (Groq chat with tool calling)
-
-`friday/llm/groq_provider.py` implements the `LLMProvider` interface
-against Groq's OpenAI-SDK-compatible chat-completions endpoint. Tool
-schemas come from `default_registry.tool_schemas()`; the provider
-translates `ChatMessage` ↔ OpenAI shape in both directions, so the
-agent loop never touches a raw OpenAI dict and never JSON-decodes
-tool-call arguments by hand.
-
-Free-tier discipline is built in via `friday/utils/tokens.py`. The
-`BudgetTracker` you pass to `GroqLLM(budget=...)` enforces the limits
-declared in `config.yaml`'s `rate_limits.groq` block:
+Everything lives in `config.yaml`. Key things you might want to change:
 
 ```yaml
-rate_limits:
+providers:
+  llm: groq          # groq | openai_compat
+  tts: kokoro        # kokoro (local, free) | elevenlabs (cloud)
+
+llm:
   groq:
-    requests_per_min: 30
-    tokens_per_min: 6000        # the real bottleneck on free tier
-    requests_per_day: 14400
-    warn_at_pct: 80
+    model: llama-3.1-8b-instant   # fast, 30k TPM free
+    # model: llama-3.3-70b-versatile  # smarter, only 6k TPM free
+
+tts:
+  kokoro:
+    voice: af_heart   # af_heart (female) | am_adam (male) | bf_emma (British female)
+    speed: 1.0
+
+hotkeys:
+  push_to_talk: ctrl+space
+  panic: ctrl+shift+esc
+
+safety:
+  dry_run: false               # set true to log actions without executing
+  skip_confirm_destructive: true
 ```
 
-What the tracker does on each call:
+## Spotify (optional — play songs by name)
 
-- Pre-flight: blocks (sleeps) when RPM or TPM is exhausted; raises
-  `BudgetExceededError` only on the daily-requests cap (sleeping
-  doesn't help there).
-- Warns at `warn_at_pct` for every meter that's projected over the
-  threshold after this call.
-- On 429: honors the server's `retry-after` header verbatim
-  (capped at 30 s), then retries — bounded to three attempts.
+Basic search works with zero setup (opens the Spotify app). To enable **play by name**, set up a Spotify Developer app:
 
-Conversation state lives in `friday/llm/history.py`. The
-`SlidingWindowHistory` keeps a sticky system message plus the last
-N user turns (default 8), preserving tool-call/tool-result pairs as
-units so the window never splits one. The agent loop owns the
-history instance; the provider is stateless.
+1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) → Create App
+2. Set redirect URI to `http://localhost:8888/callback`
+3. Add to `.env`:
 
-```bash
-# Install the LLM extras (same openai SDK as stt-groq)
-uv sync --extra llm-groq
-# or:
-pip install -e ".[llm-groq]"
+```
+SPOTIFY_CLIENT_ID=your_client_id
+SPOTIFY_CLIENT_SECRET=your_client_secret
 ```
 
-## Run the full Phase 1 loop
+Then: `uv sync --extra spotify`
 
-```bash
-# Everything wired together: PTT → Groq Whisper → Groq LLM (with tool
-# calling against the skills registry) → SafetyGate (dry-run) → Kokoro.
-uv sync --extra audio --extra tts-kokoro --extra stt-groq --extra llm-groq --extra skills
+## Switching LLM
 
-python -m friday.agent.loop
+Point FRIDAY at any OpenAI-compatible endpoint — local models via LM Studio, Ollama, vLLM, etc.:
+
+```yaml
+# config.yaml
+providers:
+  llm: openai_compat
+
+llm:
+  openai_compat:
+    base_url: http://localhost:1234/v1
+    model: lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF
 ```
 
-Hold `ctrl+space`, say *"Open Spotify and play music"*, release. FRIDAY
-transcribes via Groq Whisper, the model picks `open_app` and
-`media_control` from the registry, both gate as `dry_run`, and Kokoro
-speaks the verbal confirmation. `ctrl+shift+esc` quits and hard-cuts
-in-flight audio.
+Set `OPENAI_COMPAT_API_KEY` in `.env`.
 
-This is the brief's acceptance gate for Phase 1. Under
-`safety.dry_run: true` nothing actually executes — the audit log
-records what would have happened.
-
-## Layout
+## Project layout
 
 ```
 friday/
-  main.py            # entry point (Phase 0: boot + log + exit)
-  config.py          # .env + config.yaml loader, validated with pydantic
-  utils/logging.py   # structured logging setup + audit logger
-  stt/base.py        # STTProvider interface
-  stt/groq_whisper.py # Groq Whisper STT (default — OpenAI-SDK compatible)
-  stt/demo.py        # `python -m friday.stt.demo` — mic → Groq Whisper → Kokoro echo
-  llm/base.py        # LLMProvider interface (Phase 1: groq_provider.py)
-  tts/base.py        # TTSProvider interface
-  tts/kokoro.py      # local CPU TTS (default — no API key, no cost)
-  audio/capture.py   # mic recorder driven by PTT start/stop
-  audio/playback.py  # AudioChunk iterator → speakers (with stop()/barge-in)
-  audio/hotkey.py    # global PTT + panic hotkeys via pynput
-  audio/encoding.py  # float32 → 16-bit PCM bytes helper for STT
-  audio/demo.py      # `python -m friday.audio.demo` — end-to-end I/O smoke test
-  audio/             # mic capture + playback (Phase 1)
-  skills/registry.py # @skill decorator + SkillRegistry + JSON-schema generator
-  skills/builtin.py  # the five starter skills (open_app, web_search, …)
-  agent/safety.py    # SafetyGate: dry-run + allowlists + destructive flag + audit
-  agent/router.py    # ChatResponse → RouteResult(speech, tool_calls)
-  agent/executor.py  # one ToolCall through SafetyGate → tool ChatMessage
-  agent/loop.py      # `python -m friday.agent.loop` — the full PTT conversation
-  llm/groq_provider.py # Groq chat with tool calling + budget-tracked retries
-  llm/history.py     # SlidingWindowHistory: sticky system + last N user turns
-  utils/tokens.py    # BudgetTracker: RPM/TPM/RPD gating + 429 retry-after
-  agent/             # loop, router, executor, safety (Phase 1+)
-  codeexec/          # sandboxed code execution (Phase 3)
-  computeruse/       # screenshot + pyautogui driver (Phase 4)
+  agent/loop.py        # main entry point — PTT → STT → LLM → TTS loop
+  agent/safety.py      # guards every tool call (dry-run, allowlists, audit log)
+  agent/executor.py    # runs tool calls through the safety gate
+  agent/router.py      # parses LLM response into speech + tool calls
+  llm/groq_provider.py # Groq / OpenAI-compatible chat with streaming + tool calling
+  llm/history.py       # sliding window conversation history
+  stt/groq_whisper.py  # Groq Whisper speech-to-text
+  tts/kokoro.py        # local Kokoro TTS
+  audio/               # mic capture, speaker playback, PTT hotkeys
+  skills/builtin.py    # all built-in skills (file, app, web, system, media)
+  skills/spotify.py    # Spotify skills
+  skills/registry.py   # @skill decorator — auto-generates JSON schemas
+  utils/tokens.py      # budget tracker (RPM/TPM gating, 429 retry)
+  config.py            # config.yaml + .env loader
 ```
 
-## Phase plan
+## Notes
 
-- **Phase 0** — scaffold (you are here)
-- **Phase 1** — MVP loop: push-to-talk → Whisper → Groq + tools → ElevenLabs, 5 starter skills, dry-run on
-- **Phase 2** — latency & feel: streaming STT/LLM/TTS, barge-in, panic key, optional VAD
-- **Phase 3** — more skills + gated code-exec + full safety system
-- **Phase 4** — computer-use fallback via Gemini vision
-- **Phase 5** — wake word ("Hey FRIDAY")
-- **Phase 6** — Electron HUD overlay
-
-## Safety, in one line
-
-`safety.dry_run: true` means nothing actually executes — every intended action
-is logged to `friday_audit.log`. Keep it on while you're testing.
+- Secrets only in `.env`, never in `config.yaml`. `.env` is gitignored.
+- Every skill call is logged to `friday_audit.log` with a timestamp.
+- `safety.dry_run: true` logs what FRIDAY would do without actually doing it — useful for testing.
