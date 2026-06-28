@@ -8,7 +8,7 @@
 # Switching brain/STT/TTS is a one-line change here — never code.
 providers:
   stt: groq           # groq | local_whisper (Phase 2+)
-  llm: groq           # groq | gemini | anthropic
+  llm: openai_compat  # groq | gemini | anthropic | openai_compat
   tts: kokoro         # kokoro (local, free, default) | elevenlabs (cloud)
 
 # Per-provider settings. Only the section matching `providers.*` is used,
