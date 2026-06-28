@@ -1,4 +1,4 @@
-"""Groq chat-completion LLM provider with tool calling.
+"""Groq chat-completion LLM provider with tool calling and streaming.
 
 Groq is OpenAI-SDK compatible — the wire format, the tool-call shape,
 the usage payload all match — so we drive it through the ``openai``
@@ -16,18 +16,18 @@ What this module owns
   ``retry-after`` on 429s through bounded retries.
 * Stateless ``chat()`` — the sliding window lives in
   :class:`~friday.llm.history.SlidingWindowHistory`, owned by the
-  agent loop (chunk 6). The provider just sends whatever it gets.
-
-Phase 1 is synchronous; streaming token deltas are a Phase 2 problem
-and would extend this class with a ``stream_chat`` method rather than
-changing :meth:`chat`.
+  agent loop. The provider just sends whatever it gets.
+* Phase 2: ``stream_chat()`` returns a :class:`StreamedResponse` whose
+  ``__iter__`` yields ``str`` text deltas.  Calling ``.response`` on it
+  (or exhausting the iterator) produces the full :class:`ChatResponse`
+  including any tool calls that came in over the stream.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Iterator
 
 from friday.llm.base import (
     ChatMessage,
@@ -166,6 +166,48 @@ class GroqLLM(LLMProvider):
         # mypy can't see that.
         assert last_exc is not None
         raise last_exc
+
+    def stream_chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+    ) -> "StreamedResponse":
+        """Stream a chat response token by token.
+
+        Returns a :class:`StreamedResponse`. Iterate it to get ``str``
+        text deltas as they arrive; once exhausted, ``.response`` holds
+        the fully assembled :class:`ChatResponse` (including tool calls
+        that arrived via the stream).
+
+        Budget accounting fires the ``before_request`` estimate before
+        the HTTP call and records actual usage after the stream closes.
+        """
+        payload_messages = [_to_openai_message(m) for m in messages]
+        request_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": payload_messages,
+            "temperature": temperature,
+            "stream": True,
+            # Ask Groq to include usage in the final stream chunk.
+            # If the endpoint doesn't support this option it's silently
+            # ignored, so no harm done.
+            "stream_options": {"include_usage": True},
+        }
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
+        if tools:
+            request_kwargs["tools"] = tools
+            request_kwargs["tool_choice"] = "auto"
+
+        estimated = _estimate_request_tokens(messages, tools)
+        if self._budget is not None:
+            self._budget.before_request(estimated_tokens=estimated)
+
+        raw_stream = self._client.chat.completions.create(**request_kwargs)
+        return StreamedResponse(raw_stream, budget=self._budget)
 
     def close(self) -> None:
         client = getattr(self, "_client", None)
@@ -327,4 +369,143 @@ def _retry_after_seconds(exc: Exception) -> float | None:
         return None
 
 
-__all__ = ["GroqLLM"]
+# --------------------------------------------------------------------------- #
+# Phase 2: Streaming response wrapper                                         #
+# --------------------------------------------------------------------------- #
+
+
+class StreamedResponse:
+    """Iterable wrapper around a streaming OpenAI chat-completion.
+
+    Iterate this object to receive ``str`` text deltas as the model
+    generates them. Once the iterator is exhausted (or ``.response``
+    is accessed), the assembled :class:`ChatResponse` is available —
+    including any tool calls that came through the stream.
+
+    Usage::
+
+        streamed = llm.stream_chat(messages, tools=tools)
+        for token in streamed:          # text deltas arrive here
+            sentence_buffer.push(token)
+        response = streamed.response    # fully assembled after iter
+
+    Thread safety: the iterator is not reentrant.  Call it from a
+    single thread (the turn worker).  ``.response`` is safe to read
+    from any thread *after* the iterator has been exhausted.
+    """
+
+    def __init__(self, raw_stream: Any, *, budget: Any = None) -> None:
+        self._stream = raw_stream
+        self._budget = budget
+        self._response: ChatResponse | None = None
+        self._exhausted = False
+
+    def __iter__(self) -> Iterator[str]:
+        """Yield text deltas; populate ``.response`` when done."""
+        if self._exhausted:
+            return
+
+        full_text = ""
+        # Accumulate tool-call deltas indexed by their position in the
+        # model's tool_calls list.  Each entry is {"id", "name", "args"}.
+        raw_tcs: list[dict[str, str]] = []
+        finish_reason = "stop"
+        usage: TokenUsage | None = None
+
+        for chunk in self._stream:
+            # The final usage-only chunk (stream_options.include_usage)
+            # arrives with an empty choices list.
+            if not chunk.choices:
+                raw_u = getattr(chunk, "usage", None)
+                if raw_u is not None:
+                    usage = _parse_usage(raw_u)
+                continue
+
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            # Text delta — yield immediately so TTS can start.
+            text_piece = getattr(delta, "content", None)
+            if text_piece:
+                full_text += text_piece
+                yield text_piece
+
+            # Tool-call deltas — accumulate argument strings.
+            tc_deltas = getattr(delta, "tool_calls", None) or []
+            for tc_d in tc_deltas:
+                idx: int = tc_d.index
+                while len(raw_tcs) <= idx:
+                    raw_tcs.append({"id": "", "name": "", "args": ""})
+                if tc_d.id:
+                    raw_tcs[idx]["id"] = tc_d.id
+                fn = getattr(tc_d, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        raw_tcs[idx]["name"] = fn.name
+                    arg_piece = getattr(fn, "arguments", None)
+                    if arg_piece:
+                        raw_tcs[idx]["args"] += arg_piece
+
+            fr = getattr(choice, "finish_reason", None)
+            if fr:
+                finish_reason = fr
+
+        self._exhausted = True
+        self._response = _assemble_response(full_text, raw_tcs, finish_reason, usage)
+
+        if self._budget is not None and usage is not None:
+            self._budget.record(tokens=usage.total_tokens)
+
+    @property
+    def response(self) -> ChatResponse:
+        """The assembled response — drain the iterator first if needed."""
+        if not self._exhausted:
+            for _ in self:
+                pass  # drain
+        assert self._response is not None
+        return self._response
+
+
+def _parse_usage(raw_u: Any) -> TokenUsage:
+    """Build a TokenUsage from a streaming usage object."""
+    cached = 0
+    details = getattr(raw_u, "prompt_tokens_details", None)
+    if details is not None:
+        cached = getattr(details, "cached_tokens", 0) or 0
+    return TokenUsage(
+        prompt_tokens=getattr(raw_u, "prompt_tokens", 0) or 0,
+        completion_tokens=getattr(raw_u, "completion_tokens", 0) or 0,
+        total_tokens=getattr(raw_u, "total_tokens", 0) or 0,
+        cached_prompt_tokens=cached,
+    )
+
+
+def _assemble_response(
+    full_text: str,
+    raw_tcs: list[dict[str, str]],
+    finish_reason: str,
+    usage: TokenUsage | None,
+) -> ChatResponse:
+    """Build a ChatResponse from the accumulated streaming data."""
+    tool_calls: list[ToolCall] = []
+    for raw in raw_tcs:
+        args_str = raw.get("args", "")
+        try:
+            arguments = json.loads(args_str) if args_str else {}
+        except json.JSONDecodeError:
+            log.warning("stream tool call arguments aren't valid JSON: %r", args_str)
+            arguments = {"_raw": args_str}
+        if not isinstance(arguments, dict):
+            arguments = {"_raw": arguments}
+        tool_calls.append(
+            ToolCall(id=raw.get("id", ""), name=raw.get("name", ""), arguments=arguments)
+        )
+    return ChatResponse(
+        content=full_text or None,
+        tool_calls=tool_calls,
+        finish_reason=finish_reason,
+        usage=usage,
+    )
+
+
+__all__ = ["GroqLLM", "StreamedResponse"]

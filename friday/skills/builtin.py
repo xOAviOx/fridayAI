@@ -1,19 +1,21 @@
-"""The five starter skills the brief calls out by name.
+"""Built-in FRIDAY skills.
 
-Each is intentionally small — the chunk's value is in the registry's
-schema generation, not in the skill bodies themselves. The bodies do
-the real OS work, but every dependency that isn't stdlib is
-lazy-imported so importing this module is free.
+Phase 1 shipped five starter skills (open_app, web_search,
+media_control, system_info, type_text).  Phase 2 adds six more:
 
-Importing this module has the side effect of registering all five
-skills in :data:`friday.skills.registry.default_registry`. That's how
-``friday/skills/__init__.py`` populates the default registry on
-package init.
+* ``set_volume`` — set system output volume 0-100.
+* ``take_screenshot`` — save a screenshot to disk.
+* ``get_clipboard`` — read the current clipboard text.
+* ``set_clipboard`` — write text to the clipboard (destructive).
+* ``list_running_apps`` — list visible running processes.
+* ``close_app`` — terminate an app by name (destructive).
 
-Safety note: the safety layer (chunk 4) is what actually gates these
-in dry-run mode and against the shell/app allowlists. By the time
-control reaches a skill body the action has already been approved.
-``destructive=True`` is the marker the safety layer reads.
+All six are lazy-import-clean: the module can be imported without any
+optional extra installed.  Only the *called* skill body pays the import
+cost.
+
+Safety note: the safety layer is what actually gates these in dry-run
+mode.  ``destructive=True`` is the marker it reads.
 """
 
 from __future__ import annotations
@@ -195,10 +197,249 @@ def type_text(text: str) -> str:
     return f"typed {len(text)} characters"
 
 
+@skill
+def set_volume(level: int) -> str:
+    """Set the system output volume.
+
+    Parameters
+    ----------
+    level:
+        Target volume 0–100. 0 = mute, 100 = maximum.
+    """
+    if not 0 <= level <= 100:
+        raise ValueError(f"level must be 0-100, got {level}")
+
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["osascript", "-e", f"set volume output volume {level}"],
+            check=True,
+            capture_output=True,
+        )
+    elif sys.platform == "win32":
+        # Use PowerShell's WScript.Shell to set volume via the mixer.
+        script = (
+            f"$obj = New-Object -ComObject WScript.Shell; "
+            f"$vol = [int]({level} * 65535 / 100); "
+            f"(New-Object -ComObject WMPlayer.OCX.7).settings.volume = {level}"
+        )
+        # Simpler nircmd path if available; fall back to audio key press.
+        if shutil.which("nircmd"):
+            vol_val = int(level * 65535 / 100)
+            subprocess.run(["nircmd", "sndvol", "set", str(vol_val)], check=True)
+        else:
+            subprocess.run(
+                ["powershell", "-Command", script],
+                capture_output=True,
+            )
+    else:
+        # Linux: amixer or pactl (PulseAudio / PipeWire)
+        if shutil.which("amixer"):
+            subprocess.run(
+                ["amixer", "-q", "sset", "Master", f"{level}%"],
+                check=True,
+            )
+        elif shutil.which("pactl"):
+            subprocess.run(
+                ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{level}%"],
+                check=True,
+            )
+        else:
+            raise RuntimeError("no volume control found (tried amixer, pactl)")
+
+    return f"volume set to {level}%"
+
+
+@skill
+def take_screenshot(filename: str = "screenshot.png") -> str:
+    """Take a screenshot and save it to disk.
+
+    Parameters
+    ----------
+    filename:
+        Output file name (relative to the current working directory or
+        an absolute path). Defaults to ``screenshot.png``.  The format
+        is inferred from the extension (``png``, ``jpg``, ``bmp``).
+    """
+    try:
+        import pyautogui  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "take_screenshot requires pyautogui. Install the skills extras:\n"
+            "    uv sync --extra skills"
+        ) from exc
+
+    path = filename.strip() or "screenshot.png"
+    img = pyautogui.screenshot()
+    img.save(path)
+    return f"screenshot saved to {path}"
+
+
+@skill
+def get_clipboard() -> str:
+    """Return the current clipboard text.
+
+    Reads from the system clipboard.  Returns an empty string when the
+    clipboard is empty or contains non-text content.
+    """
+    if sys.platform == "darwin":
+        result = subprocess.run(
+            ["pbpaste"], capture_output=True, text=True, timeout=5
+        )
+        return result.stdout
+    elif sys.platform == "win32":
+        result = subprocess.run(
+            ["powershell", "-Command", "Get-Clipboard"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.rstrip("\r\n")
+    else:
+        # Linux: try xclip then xsel
+        for cmd in [["xclip", "-selection", "clipboard", "-o"],
+                    ["xsel", "--clipboard", "--output"]]:
+            if shutil.which(cmd[0]):
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                return result.stdout
+        raise RuntimeError("no clipboard tool found (tried xclip, xsel)")
+
+
+@skill(destructive=True)
+def set_clipboard(text: str) -> str:
+    """Write text to the system clipboard.
+
+    Marked destructive because it silently overwrites whatever the user
+    currently has on the clipboard.
+
+    Parameters
+    ----------
+    text:
+        The text to place on the clipboard.
+    """
+    if not text:
+        raise ValueError("set_clipboard requires non-empty text")
+
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["pbcopy"], input=text.encode(), check=True, timeout=5
+        )
+    elif sys.platform == "win32":
+        subprocess.run(
+            ["powershell", "-Command", f"Set-Clipboard -Value '{text}'"],
+            check=True, timeout=5,
+        )
+    else:
+        for cmd, extra in [
+            (["xclip", "-selection", "clipboard"], {}),
+            (["xsel", "--clipboard", "--input"], {}),
+        ]:
+            if shutil.which(cmd[0]):
+                subprocess.run(cmd, input=text.encode(), check=True, timeout=5)
+                break
+        else:
+            raise RuntimeError("no clipboard tool found (tried xclip, xsel)")
+
+    preview = text[:40] + ("…" if len(text) > 40 else "")
+    return f"clipboard set to: {preview!r}"
+
+
+@skill
+def list_running_apps() -> str:
+    """Return a deduplicated list of visible running application names.
+
+    Uses ``psutil`` to enumerate processes and filters out kernel
+    threads and system daemons, returning only user-visible process
+    names.
+    """
+    try:
+        import psutil  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "list_running_apps requires psutil. Install the skills extras:\n"
+            "    uv sync --extra skills"
+        ) from exc
+
+    names: set[str] = set()
+    for proc in psutil.process_iter(["name"]):
+        try:
+            name = proc.info.get("name") or ""
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        # Strip common system noise — empty names, kernel helpers.
+        name = name.strip()
+        if name and not name.startswith("["):
+            # Trim .exe suffix on Windows for readability.
+            if name.lower().endswith(".exe"):
+                name = name[:-4]
+            names.add(name)
+
+    if not names:
+        return "no running apps found"
+    sorted_names = sorted(names, key=str.lower)
+    return ", ".join(sorted_names[:30])  # cap at 30 to avoid a wall of text
+
+
+@skill(destructive=True)
+def close_app(name: str) -> str:
+    """Close (terminate) the named application.
+
+    Marked destructive — it sends SIGTERM (or the OS equivalent) to
+    all processes whose name matches ``name``.  Unsaved work in the
+    target app will be lost.
+
+    Parameters
+    ----------
+    name:
+        Process name to kill, e.g. ``"spotify"``, ``"chrome"``.
+        Matching is case-insensitive.  On Windows, ``.exe`` is added
+        automatically if absent.
+    """
+    target = name.strip()
+    if not target:
+        raise ValueError("close_app requires a non-empty name")
+
+    if sys.platform == "win32":
+        exe = target if target.lower().endswith(".exe") else f"{target}.exe"
+        result = subprocess.run(
+            ["taskkill", "/IM", exe, "/F"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return f"closed {target}"
+        return f"could not close {target}: {result.stderr.strip()}"
+
+    elif sys.platform == "darwin":
+        # Try AppleScript first (graceful quit), fall back to pkill.
+        result = subprocess.run(
+            ["osascript", "-e", f'quit app "{target}"'],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return f"asked {target} to quit"
+        # Fall through to pkill for apps that don't respond to AppleScript.
+        subprocess.run(["pkill", "-ix", target], capture_output=True)
+        return f"sent terminate signal to {target}"
+
+    else:
+        # Linux: pkill by name.
+        result = subprocess.run(
+            ["pkill", "-x", target],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return f"terminated {target}"
+        # returncode 1 means no matching process.
+        return f"no process named {target!r} found"
+
+
 __all__ = [
+    "close_app",
+    "get_clipboard",
+    "list_running_apps",
     "media_control",
     "open_app",
+    "set_clipboard",
+    "set_volume",
     "system_info",
+    "take_screenshot",
     "type_text",
     "web_search",
 ]

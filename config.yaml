@@ -46,6 +46,8 @@ tts:
 audio:
   sample_rate: 16000
   channels: 1
+  # Phase 2+: set true once the VAD implementation lands (next chunk).
+  vad_enabled: false
 
 hotkeys:
   push_to_talk: ctrl+space

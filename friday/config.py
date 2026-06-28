@@ -120,6 +120,11 @@ class ProviderSelection(_StrictModel):
 class AudioConfig(_StrictModel):
     sample_rate: int = 16000
     channels: int = 1
+    # Phase 2+: voice-activity detection. When True, recording stops
+    # automatically after silence rather than requiring PTT release.
+    # The VAD implementation is plumbed in config here; the wiring to a
+    # VAD library lands in a subsequent Phase 2 chunk.
+    vad_enabled: bool = False
 
     @field_validator("sample_rate")
     @classmethod

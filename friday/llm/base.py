@@ -5,6 +5,7 @@ shape because Groq is OpenAI-SDK compatible and most other providers
 (Gemini, Anthropic) can be adapted to/from it.
 
 Phase 0: definition only. Implementations land in Phase 1.
+Phase 2 adds: ``stream_chat`` for token-by-token streaming → sentence TTS.
 """
 
 from __future__ import annotations
@@ -89,6 +90,31 @@ class LLMProvider(ABC):
     @abstractmethod
     def model(self) -> str:
         """The currently selected model id (for logging / token accounting)."""
+
+    def stream_chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+    ) -> "StreamedResponse":
+        """Stream a chat response token by token.
+
+        Returns a :class:`~friday.llm.groq_provider.StreamedResponse`
+        whose ``__iter__`` yields ``str`` text deltas. After the
+        iterator is exhausted, ``.response`` holds the assembled
+        :class:`ChatResponse` (including any tool calls).
+
+        Providers that don't support streaming can override this to
+        fall back to :meth:`chat` — the default raises
+        ``NotImplementedError`` so missing implementations are caught
+        at startup rather than mid-conversation.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement stream_chat. "
+            "Use chat() instead, or implement stream_chat()."
+        )
 
     def close(self) -> None:  # pragma: no cover - default is no-op
         """Release any underlying resources. Default is a no-op."""
