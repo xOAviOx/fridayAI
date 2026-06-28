@@ -61,9 +61,9 @@ audio:
   # Set enabled: true to switch from push-to-talk to hands-free mode.
   # PTT (ctrl+space) still works as a fallback even in wake-word mode.
   wake_word:
-    enabled: false          # flip to true to activate
+    enabled: true           # flip to true to activate
     model: hey_jarvis       # built-in: hey_jarvis | alexa | hey_mycroft | hey_rhasspy
-    sensitivity: 0.5        # 0.0–1.0 — lower = more triggers, higher = fewer
+    sensitivity: 0.1        # 0.0–1.0 — lower = more triggers, higher = fewer
     vad_aggressiveness: 2   # 0–3 — higher ends recording sooner in noisy rooms
     silence_ms: 900         # ms of consecutive silence that ends an utterance
     max_record_s: 15.0      # hard cap on utterance length

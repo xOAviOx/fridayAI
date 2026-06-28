@@ -459,6 +459,8 @@ class AgentLoop:
         self._hotkeys.start()
         self._monitor.start()
         if self._wake_listener is not None:
+            # Show wake-word scores at DEBUG so sensitivity can be tuned.
+            logging.getLogger("friday.audio.wakeword").setLevel(logging.DEBUG)
             self._wake_listener.start()
 
         ww_cfg = self._cfg.audio.wake_word
@@ -607,7 +609,7 @@ class AgentLoop:
         try:
             transcript = self._stt.transcribe(
                 float32_to_pcm16_bytes(audio),
-                sample_rate=self._recorder.sample_rate,
+                sample_rate=self._cfg.audio.sample_rate,
             )
         except Exception as exc:
             log.exception("transcription failed: %s", exc)
