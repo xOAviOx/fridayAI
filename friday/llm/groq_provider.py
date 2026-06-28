@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Iterator
 
 from friday.llm.base import (
@@ -42,6 +43,19 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_S = 30.0
 _MAX_RETRIES = 3
+
+# Regex that extracts <tool_call>…</tool_call> blocks from model text.
+_TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+
+_PROMPT_TOOLS_INSTRUCTION = """
+You have access to tools. Call a tool by outputting EXACTLY this format (nothing else on that line):
+<tool_call>{{"name": "TOOL_NAME", "arguments": {{"arg1": "value1", "arg2": "value2"}}}}</tool_call>
+
+You may call one tool per response. After each tool result you'll be called again. Once all actions are done, reply with a short spoken confirmation.
+
+Available tools (JSON schemas):
+{schemas}
+""".strip()
 
 
 class GroqLLM(LLMProvider):
@@ -72,6 +86,7 @@ class GroqLLM(LLMProvider):
         base_url: str = "https://api.groq.com/openai/v1",
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         budget: BudgetTracker | None = None,
+        prompt_tools: bool = False,
     ) -> None:
         if not api_key or not api_key.strip():
             raise ValueError("GroqLLM requires a non-empty api_key")
@@ -95,6 +110,7 @@ class GroqLLM(LLMProvider):
         )
         self._model = model
         self._budget = budget
+        self._prompt_tools = prompt_tools
         log.debug(
             "GroqLLM ready: model=%s base_url=%s budget=%s",
             model,
@@ -185,6 +201,13 @@ class GroqLLM(LLMProvider):
         Budget accounting fires the ``before_request`` estimate before
         the HTTP call and records actual usage after the stream closes.
         """
+        # prompt_tools mode: inject tool schemas as text in the last user
+        # message instead of using the native tools API parameter.
+        # Used for openai_compat endpoints that silently drop the tools param.
+        if self._prompt_tools and tools:
+            messages = _inject_prompt_tools(messages, tools)
+            tools = None  # don't send native tools
+
         payload_messages = [_to_openai_message(m) for m in messages]
         request_kwargs: dict[str, Any] = {
             "model": self._model,
@@ -207,7 +230,9 @@ class GroqLLM(LLMProvider):
             self._budget.before_request(estimated_tokens=estimated)
 
         raw_stream = self._client.chat.completions.create(**request_kwargs)
-        return StreamedResponse(raw_stream, budget=self._budget)
+        return StreamedResponse(
+            raw_stream, budget=self._budget, prompt_tools=self._prompt_tools
+        )
 
     def close(self) -> None:
         client = getattr(self, "_client", None)
@@ -328,6 +353,62 @@ def _from_openai_response(response: Any) -> ChatResponse:
 # --------------------------------------------------------------------------- #
 
 
+def _inject_prompt_tools(
+    messages: list[ChatMessage],
+    tools: list[dict[str, Any]],
+) -> list[ChatMessage]:
+    """Append a compact tool-schema block to the last user message."""
+    # Compact schema: keep name, description, and parameters only.
+    compact = [
+        {
+            "name": t["function"]["name"],
+            "description": t["function"].get("description", ""),
+            "parameters": t["function"].get("parameters", {}),
+        }
+        for t in tools
+    ]
+    schemas_json = json.dumps(compact, indent=2)
+    instruction = _PROMPT_TOOLS_INSTRUCTION.format(schemas=schemas_json)
+
+    # Find the last user message and append the tool block to it.
+    result = list(messages)
+    for i in range(len(result) - 1, -1, -1):
+        if result[i].role == "user":
+            original = result[i].content or ""
+            result[i] = ChatMessage(
+                role="user",
+                content=f"{original}\n\n{instruction}",
+            )
+            return result
+
+    # No user message found — prepend as a standalone user message.
+    result.insert(0, ChatMessage(role="user", content=instruction))
+    return result
+
+
+def _parse_prompt_tool_calls(text: str) -> tuple[str, list[ToolCall]]:
+    """Extract <tool_call> blocks from model text.
+
+    Returns ``(clean_text, tool_calls)`` where ``clean_text`` has the
+    blocks removed so only the spoken reply goes to TTS.
+    """
+    tool_calls: list[ToolCall] = []
+    for i, match in enumerate(_TOOL_CALL_RE.finditer(text)):
+        raw = match.group(1).strip()
+        try:
+            data = json.loads(raw)
+            name = data.get("name", "")
+            arguments = data.get("arguments", {})
+            if not isinstance(arguments, dict):
+                arguments = {"_raw": arguments}
+            tool_calls.append(ToolCall(id=f"ptc_{i}", name=name, arguments=arguments))
+        except json.JSONDecodeError:
+            log.warning("prompt tool call has invalid JSON: %r", raw[:120])
+
+    clean = _TOOL_CALL_RE.sub("", text).strip()
+    return clean, tool_calls
+
+
 def _estimate_request_tokens(
     messages: list[ChatMessage],
     tools: list[dict[str, Any]] | None,
@@ -394,9 +475,12 @@ class StreamedResponse:
     from any thread *after* the iterator has been exhausted.
     """
 
-    def __init__(self, raw_stream: Any, *, budget: Any = None) -> None:
+    def __init__(
+        self, raw_stream: Any, *, budget: Any = None, prompt_tools: bool = False
+    ) -> None:
         self._stream = raw_stream
         self._budget = budget
+        self._prompt_tools = prompt_tools
         self._response: ChatResponse | None = None
         self._exhausted = False
 
@@ -451,7 +535,23 @@ class StreamedResponse:
                 finish_reason = fr
 
         self._exhausted = True
-        self._response = _assemble_response(full_text, raw_tcs, finish_reason, usage)
+
+        # prompt_tools mode: extract <tool_call> blocks from the text.
+        if self._prompt_tools:
+            clean_text, ptc_calls = _parse_prompt_tool_calls(full_text)
+            if ptc_calls:
+                self._response = ChatResponse(
+                    content=clean_text or None,
+                    tool_calls=ptc_calls,
+                    finish_reason="tool_calls",
+                    usage=usage,
+                )
+            else:
+                self._response = _assemble_response(
+                    clean_text, raw_tcs, finish_reason, usage
+                )
+        else:
+            self._response = _assemble_response(full_text, raw_tcs, finish_reason, usage)
 
         if self._budget is not None and usage is not None:
             self._budget.record(tokens=usage.total_tokens)
