@@ -668,15 +668,21 @@ class StreamedResponse:
                     finish_reason = fr
 
         except Exception as exc:
-            # Groq raises APIError("Failed to call a function…") when the
-            # model generates a malformed tool-call JSON.  Wrap it so the
-            # agent loop can catch ToolCallError specifically and retry.
+            # Groq raises APIError when the model generates a malformed tool
+            # call.  Two known variants:
+            #   "Failed to call a function" — bad JSON in arguments
+            #   "tool call validation failed" — tool name not in request.tools
+            #     (happens when model concatenates name+args into the name field)
+            # Wrap both so the agent loop can catch ToolCallError and retry.
             msg = str(exc)
-            if "Failed to call a function" in msg or "failed_generation" in msg:
+            if (
+                "Failed to call a function" in msg
+                or "failed_generation" in msg
+                or "tool call validation failed" in msg
+            ):
                 self._exhausted = True
                 raise ToolCallError(
-                    "Model failed to generate a valid tool call — "
-                    "this usually means too many tools or a model limitation."
+                    "Model failed to generate a valid tool call — retrying without tools."
                 ) from exc
             raise  # re-raise anything else unchanged
 

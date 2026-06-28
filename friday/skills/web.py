@@ -39,65 +39,97 @@ _UA = "FRIDAY-AI/1.0 (voice assistant)"
 # --------------------------------------------------------------------------- #
 
 
-@skill(description="Search the web and return actual text answers via DuckDuckGo.")
+@skill(description="Search the web and return actual text results via DuckDuckGo.")
 def web_search_results(query: str) -> str:
-    """Query DuckDuckGo Instant Answer API and return a text summary.
+    """Search DuckDuckGo and return real result snippets.
 
-    Returns the abstract, direct answer, or top related snippets so
-    FRIDAY can answer factual questions from web knowledge without
+    Tries the Instant Answer API first (fast, good for facts).  Falls
+    back to scraping DuckDuckGo's HTML results page for current-events
+    queries where the instant answer returns nothing.  Returns up to
+    five result snippets as plain text so FRIDAY can answer without
     opening a browser.
 
     Parameters
     ----------
     query:
         Natural-language question or search terms,
-        e.g. ``"capital of Japan"``, ``"latest Python version"``.
+        e.g. ``"Portugal vs Uzbekistan match result"``.
     """
     q = query.strip()
     if not q:
         raise ValueError("web_search_results requires a non-empty query")
 
+    # ---- 1. Instant Answer API (facts, conversions, Wikipedia abstracts) ----
     encoded = urllib.parse.quote_plus(q)
-    url = (
+    ia_url = (
         f"https://api.duckduckgo.com/?q={encoded}"
         "&format=json&no_html=1&skip_disambig=1&no_redirect=1"
     )
-
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        req = urllib.request.Request(ia_url, headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+
+        parts: list[str] = []
+        answer = (data.get("Answer") or "").strip()
+        if answer:
+            parts.append(answer)
+        abstract = (data.get("AbstractText") or "").strip()
+        if abstract:
+            parts.append(abstract)
+        if not parts:
+            for topic in (data.get("RelatedTopics") or [])[:4]:
+                text = (topic.get("Text") or "").strip()
+                if text:
+                    parts.append(text)
+        if parts:
+            return " | ".join(parts)[:2_000]
     except Exception as exc:
-        raise RuntimeError(f"web search failed: {exc}") from exc
+        log.debug("instant answer API failed: %s", exc)
 
-    parts: list[str] = []
-
-    # Direct answer (e.g. unit conversions, quick facts)
-    answer = (data.get("Answer") or "").strip()
-    if answer:
-        parts.append(answer)
-
-    # Abstract text (Wikipedia-style summary)
-    abstract = (data.get("AbstractText") or "").strip()
-    if abstract:
-        parts.append(abstract)
-
-    # Related topic snippets (when there's no abstract)
-    if not parts:
-        for topic in data.get("RelatedTopics", [])[:5]:
-            text = (topic.get("Text") or "").strip()
-            if text:
-                parts.append(text)
-
-    if not parts:
-        return (
-            f"No instant answer found for '{q}'. "
-            "Try fetch_webpage with a specific URL, or ask me to open a browser search."
+    # ---- 2. HTML scrape fallback (sports scores, recent news, etc.) ---------
+    html_url = f"https://html.duckduckgo.com/html/?q={encoded}"
+    try:
+        req = urllib.request.Request(
+            html_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
         )
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            raw_html = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return f"Web search unavailable: {exc}"
 
-    combined = " | ".join(parts)
-    # Cap at a reasonable length so we don't swamp the LLM context.
-    return combined[:2_000]
+    snippets = _extract_ddg_snippets(raw_html, max_results=5)
+    if not snippets:
+        return f"No web results found for '{q}'."
+
+    lines = [f"{i+1}. {s}" for i, s in enumerate(snippets)]
+    return "\n".join(lines)[:2_500]
+
+
+# Extracts result snippets from DuckDuckGo's HTML results page.
+_RESULT_RE = re.compile(
+    r'class="result__snippet"[^>]*>(.*?)</a>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_ddg_snippets(html_text: str, max_results: int = 5) -> list[str]:
+    snippets: list[str] = []
+    for m in _RESULT_RE.finditer(html_text):
+        text = _strip_html(m.group(1)).strip()
+        if text and len(text) > 20:
+            snippets.append(text)
+        if len(snippets) >= max_results:
+            break
+    return snippets
 
 
 # --------------------------------------------------------------------------- #
