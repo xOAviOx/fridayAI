@@ -44,7 +44,7 @@ from friday.skills.registry import skill
 log = logging.getLogger(__name__)
 
 
-@skill
+@skill(description="Open an application by name.")
 def open_app(name: str) -> str:
     """Open the named application on the user's machine.
 
@@ -79,7 +79,7 @@ def open_app(name: str) -> str:
     return f"launched {target}"
 
 
-@skill
+@skill(description="Open DuckDuckGo search results in the browser.")
 def web_search(query: str) -> str:
     """Open the default browser to search results for ``query``.
 
@@ -98,7 +98,7 @@ def web_search(query: str) -> str:
     return f"opened browser to results for: {q}"
 
 
-@skill
+@skill(description="Send a media key: play_pause, next, previous, volume_up, volume_down.")
 def media_control(
     action: Literal[
         "play_pause", "next", "previous", "volume_up", "volume_down"
@@ -137,7 +137,7 @@ def media_control(
     return f"sent media key: {action}"
 
 
-@skill
+@skill(description="Return current time, battery %, or CPU load.")
 def system_info(metric: Literal["battery", "time", "cpu"]) -> str:
     """Return a one-line snapshot of a system metric.
 
@@ -177,7 +177,7 @@ def system_info(metric: Literal["battery", "time", "cpu"]) -> str:
     raise ValueError(f"unknown metric: {metric!r}")
 
 
-@skill(destructive=True)
+@skill(destructive=True, description="Type text at the current cursor position.")
 def type_text(text: str) -> str:
     """Type ``text`` at the current keyboard cursor position.
 
@@ -207,7 +207,7 @@ def type_text(text: str) -> str:
     return f"typed {len(text)} characters"
 
 
-@skill
+@skill(description="Set system output volume 0–100.")
 def set_volume(level: int) -> str:
     """Set the system output volume.
 
@@ -259,7 +259,7 @@ def set_volume(level: int) -> str:
     return f"volume set to {level}%"
 
 
-@skill
+@skill(description="Save a screenshot to disk.")
 def take_screenshot(filename: str = "screenshot.png") -> str:
     """Take a screenshot and save it to disk.
 
@@ -284,7 +284,7 @@ def take_screenshot(filename: str = "screenshot.png") -> str:
     return f"screenshot saved to {path}"
 
 
-@skill
+@skill(description="Read and return the current clipboard text.")
 def get_clipboard() -> str:
     """Return the current clipboard text.
 
@@ -312,7 +312,7 @@ def get_clipboard() -> str:
         raise RuntimeError("no clipboard tool found (tried xclip, xsel)")
 
 
-@skill(destructive=True)
+@skill(destructive=True, description="Replace the clipboard with text.")
 def set_clipboard(text: str) -> str:
     """Write text to the system clipboard.
 
@@ -351,7 +351,7 @@ def set_clipboard(text: str) -> str:
     return f"clipboard set to: {preview!r}"
 
 
-@skill
+@skill(description="List names of currently running apps (up to 30).")
 def list_running_apps() -> str:
     """Return a deduplicated list of visible running application names.
 
@@ -387,7 +387,7 @@ def list_running_apps() -> str:
     return ", ".join(sorted_names[:30])  # cap at 30 to avoid a wall of text
 
 
-@skill(destructive=True)
+@skill(destructive=True, description="Terminate an application by name.")
 def close_app(name: str) -> str:
     """Close (terminate) the named application.
 
@@ -448,7 +448,7 @@ def close_app(name: str) -> str:
 _READ_FILE_MAX_BYTES = 32_768  # 32 KB
 
 
-@skill
+@skill(description="Return the text content of a file (max 32 KB).")
 def read_file(path: str) -> str:
     """Return the text content of a file.
 
@@ -478,7 +478,7 @@ def read_file(path: str) -> str:
     return text + suffix
 
 
-@skill(destructive=True)
+@skill(destructive=True, description="Create or overwrite a file with text content.")
 def write_file(path: str, content: str) -> str:
     """Write *content* to a file, creating it (and any parent directories) if needed.
 
@@ -504,7 +504,7 @@ def write_file(path: str, content: str) -> str:
     return f"wrote {len(content)} chars ({lines} lines) to {p}"
 
 
-@skill(destructive=True)
+@skill(destructive=True, description="Permanently delete a file.")
 def delete_file(path: str) -> str:
     """Permanently delete a single file.
 
@@ -526,7 +526,7 @@ def delete_file(path: str) -> str:
     return f"deleted file: {p}"
 
 
-@skill
+@skill(description="Create a directory and any missing parent directories.")
 def create_folder(path: str) -> str:
     """Create a directory (and any missing parents).
 
@@ -547,7 +547,7 @@ def create_folder(path: str) -> str:
     return f"created folder: {p}"
 
 
-@skill(destructive=True)
+@skill(destructive=True, description="Permanently delete a directory and all its contents.")
 def delete_folder(path: str) -> str:
     """Permanently delete a directory and everything inside it.
 
