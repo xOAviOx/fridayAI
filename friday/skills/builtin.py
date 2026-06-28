@@ -521,6 +521,12 @@ def write_file(path: str, content: str) -> str:
     return f"wrote {len(content)} chars ({lines} lines) to {p}"
 
 
+@skill(destructive=True, description="Alias for write_file — create a new file with text content.")
+def create_file(path: str, content: str) -> str:
+    """Alias for write_file — many models prefer this name."""
+    return write_file(path=path, content=content)
+
+
 @skill(destructive=True, description="Permanently delete a file.")
 def delete_file(path: str) -> str:
     """Permanently delete a single file.
