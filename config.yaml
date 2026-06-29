@@ -48,7 +48,7 @@ tts:
 
   # Opt-in cloud TTS. Requires ELEVENLABS_API_KEY in .env when selected.
   elevenlabs:
-    voice_id: ""            # set to your preferred ElevenLabs voice id
+    voice_id: "21m00Tcm4TlvDq8ikWAM"   # Rachel — default voice, free-tier accessible
     model: eleven_turbo_v2_5
 
 audio:
@@ -61,7 +61,7 @@ audio:
   # Set enabled: true to switch from push-to-talk to hands-free mode.
   # PTT (ctrl+space) still works as a fallback even in wake-word mode.
   wake_word:
-    enabled: true           # flip to true to activate
+    enabled: false          # flip to true to activate
     model: hey_jarvis       # built-in: hey_jarvis | alexa | hey_mycroft | hey_rhasspy
     sensitivity: 0.1        # 0.0–1.0 — lower = more triggers, higher = fewer
     vad_aggressiveness: 2   # 0–3 — higher ends recording sooner in noisy rooms

@@ -264,21 +264,55 @@ class WakeWordListener:
     # ---- utterance recording: VAD silence gate ------------------------------
 
     def _record_utterance_vad(self) -> Any:
-        """Record until silence or max_record_s and return float32 audio."""
+        """Record until silence or max_record_s and return float32 audio.
+
+        Behaviour notes
+        ---------------
+        * The wake-clip Whisper call takes ~500 ms+, during which the
+          audio queue often empties.  ``_get_frame()`` then returns
+          ``None`` on its 300 ms internal timeout.  We must NOT exit on
+          the first ``None`` — the user is still drawing breath to
+          speak the command.  Instead we wait up to ``_grace_s`` for
+          speech to start; only after that do empty frames count as
+          end-of-stream.
+        * Once speech has been heard, normal VAD silence-gate ends the
+          recording.
+        """
         np = self._np
         silence_frames_needed = max(1, self._silence_ms // _FRAME_MS)
         max_frames = int(self._max_record_s * 1_000 / _FRAME_MS)
+        # How long to wait for the user to begin their command after
+        # the wake phrase before giving up.  3 s is comfortable.
+        grace_s = 3.0
+        grace_empty_polls = int(grace_s / _QUEUE_TIMEOUT) + 1
 
         frames: list[Any] = []
         consecutive_silence = 0
         speech_started = False
+        empty_polls = 0
 
         for _ in range(max_frames):
             if self._stop_event.is_set() or self._ptt_active.is_set():
                 break
             frame = self._get_frame()
             if frame is None:
-                break
+                # No audio chunk arrived this poll.  Tolerate it while
+                # we're still waiting for the user to start speaking.
+                if speech_started:
+                    # Mid-utterance silence shouldn't normally show up
+                    # as None (the mic callback keeps feeding the queue
+                    # even during quiet), but if it does, treat it like
+                    # a silence frame so the silence gate can still end
+                    # the recording.
+                    consecutive_silence += 1
+                    if consecutive_silence >= silence_frames_needed:
+                        break
+                    continue
+                empty_polls += 1
+                if empty_polls >= grace_empty_polls:
+                    # User never said anything within the grace window.
+                    break
+                continue
 
             frames.append(frame[:, 0].copy())
 

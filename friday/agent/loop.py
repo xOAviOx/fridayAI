@@ -173,7 +173,7 @@ from friday.llm.history import SlidingWindowHistory
 from friday.skills import default_registry
 from friday.skills import timers as timers_module
 from friday.stt.groq_whisper import GroqWhisperSTT
-from friday.tts.base import AudioChunk
+from friday.tts.base import AudioChunk, TTSProvider
 from friday.tts.kokoro import KokoroTTS
 from friday.utils.logging import setup_logging
 from friday.utils.sentence import SentenceSplitter
@@ -273,7 +273,7 @@ class _TTSPipeline:
     so the background thread exits cleanly.
     """
 
-    def __init__(self, tts: KokoroTTS, speaker: Speaker) -> None:
+    def __init__(self, tts: TTSProvider, speaker: Speaker) -> None:
         self._tts = tts
         self._speaker = speaker
         self._q: queue.Queue[str | None] = queue.Queue()
@@ -351,11 +351,23 @@ class AgentLoop:
             api_key=_require(config.secrets.groq_api_key, "GROQ_API_KEY"),
             model=config.stt.groq.model,
         )
-        self._tts = KokoroTTS(
-            voice=config.tts.kokoro.voice,
-            lang_code=config.tts.kokoro.lang_code,
-            speed=config.tts.kokoro.speed,
-        )
+        # Branch on the selected TTS provider.  ElevenLabs is opt-in;
+        # Kokoro stays the zero-cost default.
+        if config.providers.tts == "elevenlabs":
+            from friday.tts.elevenlabs import ElevenLabsTTS
+            self._tts: TTSProvider = ElevenLabsTTS(
+                api_key=_require(
+                    config.secrets.elevenlabs_api_key, "ELEVENLABS_API_KEY"
+                ),
+                voice_id=config.tts.elevenlabs.voice_id,
+                model=config.tts.elevenlabs.model,
+            )
+        else:
+            self._tts = KokoroTTS(
+                voice=config.tts.kokoro.voice,
+                lang_code=config.tts.kokoro.lang_code,
+                speed=config.tts.kokoro.speed,
+            )
         if config.providers.llm == "openai_compat":
             budget = BudgetTracker(
                 config.rate_limits.get("openai_compat") or _empty_budget(),
@@ -397,10 +409,18 @@ class AgentLoop:
         ww_cfg = config.audio.wake_word
         if ww_cfg.enabled:
             self._recorder = None
+
+            # Adapt GroqWhisperSTT.transcribe's kw-only sample_rate to
+            # the positional (bytes, int) shape WakeWordListener uses
+            # for its short wake-phrase clips.  The listener reads
+            # `.text` off the returned Transcript itself, so we don't
+            # unwrap it here.
+            def _wake_transcribe(pcm16: bytes, sr: int):
+                return self._stt.transcribe(pcm16, sample_rate=sr)
+
             self._wake_listener: WakeWordListener | None = WakeWordListener(
                 on_wake=self._on_wake_word,
-                model_name=ww_cfg.model,
-                sensitivity=ww_cfg.sensitivity,
+                transcribe_fn=_wake_transcribe,
                 vad_aggressiveness=ww_cfg.vad_aggressiveness,
                 silence_ms=ww_cfg.silence_ms,
                 max_record_s=ww_cfg.max_record_s,
@@ -822,9 +842,10 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    if config.providers.tts != "kokoro":
+    if config.providers.tts not in ("kokoro", "elevenlabs"):
         print(
-            f"[FATAL] loop expects providers.tts = kokoro, got {config.providers.tts!r}",
+            f"[FATAL] loop expects providers.tts = kokoro or elevenlabs, "
+            f"got {config.providers.tts!r}",
             file=sys.stderr,
         )
         return 2
